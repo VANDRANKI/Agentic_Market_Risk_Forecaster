@@ -21,8 +21,14 @@ scikit-learn>=1.3.0
 plotly>=5.18.0
 
 # AI agents
-# litellm and groq are transitive deps managed by crewai. Do not pin them here.
+# openai>=2.8.0 forces pip to install openai 2.x (crewai requires >=1.13.3, no upper bound).
+# litellm and groq must be explicit because crewai's transitive resolution lands on openai 1.x
+# which breaks litellm's import. Forcing openai 2.x + explicit litellm/groq fixes this on
+# Streamlit Cloud where the two-step install.bat workaround cannot run.
 crewai==1.9.3
+openai>=2.8.0
+litellm>=1.53.0
+groq>=0.9.0
 
 # Config and env
 python-dotenv>=1.0.0

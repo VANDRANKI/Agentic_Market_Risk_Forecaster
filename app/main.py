@@ -36,6 +36,12 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# Inject Streamlit Cloud secrets into os.environ so downstream code
+# (CrewAI / LiteLLM) can read them via os.getenv().
+for _key in ("GROQ_API_KEY", "ALPHA_VANTAGE_API_KEY"):
+    if _key in st.secrets and not os.environ.get(_key):
+        os.environ[_key] = st.secrets[_key]
+
 # ---------------------------------------------------------------------------
 # CSS injection
 # ---------------------------------------------------------------------------

@@ -1,0 +1,37 @@
+default_portfolio:
+  tickers: [SPY, QQQ, IWM, AAPL, MSFT]
+  weights: [0.25, 0.20, 0.15, 0.20, 0.20]
+
+predefined_portfolios:
+  - name: US Indices
+    tickers: [SPY, QQQ, IWM, DIA]
+    weights: [0.30, 0.30, 0.20, 0.20]
+
+  - name: Tech Heavy
+    tickers: [AAPL, MSFT, NVDA, GOOG, META]
+    weights: [0.20, 0.20, 0.20, 0.20, 0.20]
+
+  - name: Diversified
+    tickers: [SPY, TLT, GLD, VNQ, AAPL]
+    weights: [0.30, 0.20, 0.15, 0.15, 0.20]
+
+  - name: Magnificent 7
+    tickers: [AAPL, MSFT, NVDA, AMZN, GOOG, META, TSLA]
+    weights: [0.15, 0.15, 0.15, 0.15, 0.15, 0.15, 0.10]
+
+stress_periods:
+  - name: COVID Crash
+    start: "2020-02-19"
+    end: "2020-03-23"
+
+  - name: COVID Recovery
+    start: "2020-03-23"
+    end: "2020-12-31"
+
+  - name: Rate Hike Regime 2022
+    start: "2022-01-01"
+    end: "2022-12-31"
+
+  - name: AI Rally 2023
+    start: "2023-01-01"
+    end: "2023-12-31"

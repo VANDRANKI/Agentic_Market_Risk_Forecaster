@@ -46,40 +46,32 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# LLM setup
+# Groq direct call helper
 # ---------------------------------------------------------------------------
 
 
-def _create_llm(model: Optional[str] = None):
-    """
-    Create the Groq LLM instance for CrewAI.
-
-    Uses llama-3.3-70b-versatile by default (reliable structured output).
-    Set GROQ_MODEL env var to override, e.g. 'qwen-qwq-32b' for deeper reasoning.
-    """
+def _call_groq_agent(client, model: str, system: str, task_desc: str, prior_outputs: list) -> str:
+    """Call Groq API directly for one agent step, passing prior outputs as context."""
+    messages = [{"role": "system", "content": system}]
+    user_content = task_desc
+    if prior_outputs:
+        prior_text = "\n\n".join(
+            f"Previous analysis:\n{o}" for o in prior_outputs if o
+        )
+        user_content = prior_text + "\n\n" + task_desc
+    messages.append({"role": "user", "content": user_content})
     try:
-        from crewai import LLM
-    except ImportError:
-        logger.error("crewai not installed. Run: pip install crewai")
-        return None
-
-    api_key = os.getenv("GROQ_API_KEY")
-    if not api_key:
-        logger.warning("GROQ_API_KEY not set. Agent analysis will be skipped.")
-        return None
-
-    chosen_model = model or os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
-
-    try:
-        return LLM(
-            model=f"groq/{chosen_model}",
-            api_key=api_key,
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages,
             temperature=0.1,
             max_tokens=1000,
         )
+        raw = response.choices[0].message.content or ""
+        return raw.strip().replace("\u2014", " -- ").replace("\u2013", " - ")
     except Exception as exc:
-        logger.warning("LLM creation failed: %s", exc)
-        return None
+        logger.error("Groq API call failed: %s", exc)
+        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -673,15 +665,16 @@ _BACKSTORY_PORTFOLIO_OPTIMIZER = (
 
 def run_risk_analysis_crew(context: dict) -> dict:
     """
-    Run the 4-agent sequential CrewAI analysis on the pre-compiled context.
+    Run the 4-agent sequential analysis on the pre-compiled context.
 
-    Each agent receives:
-    - Its own formatted data block (specific to its role)
-    - The outputs of all prior agents via CrewAI's context chaining
+    Uses the Groq API directly (no crewai) to avoid the crewai 1.9.3 / openai
+    version conflict on Streamlit Cloud. Each agent is a groq.chat.completions
+    call. Context chaining is replicated by passing prior agent outputs as
+    prefixed text in the next agent's user message.
 
     Returns dict with keys: market_monitor, anomaly_detector,
     risk_forecaster, portfolio_optimizer.
-    Returns empty strings if CrewAI or Groq is unavailable.
+    Returns empty strings if Groq is unavailable.
     """
     empty = {
         "market_monitor": "",
@@ -690,87 +683,31 @@ def run_risk_analysis_crew(context: dict) -> dict:
         "portfolio_optimizer": "",
     }
 
+    # ----------------------------------------------------------------
+    # Active implementation: direct Groq API calls
+    # To restore the CrewAI implementation, see the commented block below.
+    # ----------------------------------------------------------------
+
     try:
-        from crewai import Agent, Task, Crew, Process
+        from groq import Groq
     except ImportError:
-        logger.error("crewai not installed.")
+        logger.error("groq package not installed. Run: pip install groq")
         return empty
 
-    llm = _create_llm()
-    if llm is None:
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        logger.warning("GROQ_API_KEY not set. Agent analysis will be skipped.")
         return empty
 
-    # ----------------------------------------------------------------
-    # Define agents
-    # ----------------------------------------------------------------
+    model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    client = Groq(api_key=api_key)
 
-    market_monitor = Agent(
-        role="Market Monitor",
-        goal=(
-            "Summarize the portfolio's current market conditions, volatility regime, "
-            "return distribution characteristics, correlation structure, and the most "
-            "notable return events. Flag whether the current environment is elevated "
-            "or subdued relative to the historical baseline."
-        ),
-        backstory=_BACKSTORY_MARKET_MONITOR,
-        llm=llm,
-        verbose=False,
-        allow_delegation=False,
-    )
-
-    anomaly_detector = Agent(
-        role="Anomaly Detector",
-        goal=(
-            "Interpret the list of anomaly dates and their return magnitudes. "
-            "Compare what both detection methods (Z-score and Isolation Forest) "
-            "found, with emphasis on dates where both agree. Classify anomalies "
-            "as clustered vs isolated and infer the likely economic drivers. "
-            "State clearly whether the anomaly pattern is a systemic risk signal "
-            "or isolated noise."
-        ),
-        backstory=_BACKSTORY_ANOMALY_DETECTOR,
-        llm=llm,
-        verbose=False,
-        allow_delegation=False,
-    )
-
-    risk_forecaster = Agent(
-        role="Risk Forecaster",
-        goal=(
-            "Interpret the four VaR estimates and explain why they differ. "
-            "Compute and explain the ES/VaR ratio as a fat-tail severity indicator. "
-            "Interpret GARCH persistence as a forward-looking signal about how long "
-            "current volatility will persist. Deliver a clear, specific verdict on "
-            "both backtest results (Kupiec and Christoffersen) in plain language. "
-            "State the overall risk level: acceptable, elevated, or critical."
-        ),
-        backstory=_BACKSTORY_RISK_FORECASTER,
-        llm=llm,
-        verbose=False,
-        allow_delegation=False,
-    )
-
-    portfolio_optimizer = Agent(
-        role="Portfolio Optimizer",
-        goal=(
-            "Compare the current portfolio versus Max Sharpe and Min Volatility "
-            "alternatives using full weight tables. Quantify the Sharpe ratio and "
-            "volatility improvement available. Recommend specific ticker-level "
-            "weight changes from the delta table. Tie the recommendation to the "
-            "current volatility regime and the risk forecaster's findings."
-        ),
-        backstory=_BACKSTORY_PORTFOLIO_OPTIMIZER,
-        llm=llm,
-        verbose=False,
-        allow_delegation=False,
-    )
-
-    # ----------------------------------------------------------------
-    # Define tasks with precise, structured descriptions
-    # ----------------------------------------------------------------
-
-    monitor_task = Task(
-        description=(
+    # Agent 1: Market Monitor -- no prior context
+    monitor_out = _call_groq_agent(
+        client=client,
+        model=model,
+        system=_BACKSTORY_MARKET_MONITOR,
+        task_desc=(
             "You are given the following market data for a user-defined portfolio. "
             "Write a structured market summary covering exactly these 4 points:\n\n"
             "1. VOLATILITY REGIME: State the current regime (LOW/MID/HIGH) and compare "
@@ -784,19 +721,15 @@ def run_risk_analysis_crew(context: dict) -> dict:
             "Do NOT use em-dashes. Do NOT use emojis. Use specific numbers from the data.\n\n"
             f"MARKET DATA:\n{_fmt_market(context)}"
         ),
-        expected_output=(
-            "A 4-section structured market summary (200-280 words) covering: "
-            "volatility regime assessment with specific vol numbers, "
-            "return distribution analysis with skewness/kurtosis interpretation, "
-            "correlation observations, and worst-day event comments. "
-            "Every claim is supported by a specific number from the data. "
-            "No em-dashes. No emojis."
-        ),
-        agent=market_monitor,
+        prior_outputs=[],
     )
 
-    anomaly_task = Task(
-        description=(
+    # Agent 2: Anomaly Detector -- receives monitor output as context
+    anomaly_out = _call_groq_agent(
+        client=client,
+        model=model,
+        system=_BACKSTORY_ANOMALY_DETECTOR,
+        task_desc=(
             "You are given anomaly detection results for the portfolio. "
             "Write an anomaly analysis covering exactly these 4 points:\n\n"
             "1. DETECTION COUNTS: State how many anomalies each method found and "
@@ -812,20 +745,15 @@ def run_risk_analysis_crew(context: dict) -> dict:
             "Do NOT use em-dashes. Do NOT use emojis. Reference specific dates and return values.\n\n"
             f"ANOMALY DATA:\n{_fmt_anomaly(context)}"
         ),
-        expected_output=(
-            "A 4-section anomaly analysis (200-280 words) covering: "
-            "detection method counts and agreement, "
-            "severity assessment with actual return magnitudes on worst anomaly days, "
-            "clustering vs isolation classification, "
-            "and economic context for the most significant events. "
-            "No em-dashes. No emojis."
-        ),
-        agent=anomaly_detector,
-        context=[monitor_task],
+        prior_outputs=[monitor_out],
     )
 
-    risk_task = Task(
-        description=(
+    # Agent 3: Risk Forecaster -- receives monitor + anomaly outputs as context
+    risk_out = _call_groq_agent(
+        client=client,
+        model=model,
+        system=_BACKSTORY_RISK_FORECASTER,
+        task_desc=(
             "You are given the complete VaR, ES, GARCH, and backtest results. "
             "Write a risk assessment covering exactly these 5 points:\n\n"
             "1. VaR METHOD COMPARISON: The 4 methods will disagree. Explain WHY. "
@@ -846,21 +774,15 @@ def run_risk_analysis_crew(context: dict) -> dict:
             "Do NOT use em-dashes. Do NOT use emojis. Cite specific numbers.\n\n"
             f"RISK DATA:\n{_fmt_risk(context)}"
         ),
-        expected_output=(
-            "A 5-section risk interpretation (230-280 words) covering: "
-            "VaR method comparison with specific numbers and reasons for divergence, "
-            "ES/VaR ratio interpretation, "
-            "GARCH persistence interpretation as a forward vol signal, "
-            "plain-language Kupiec and Christoffersen verdicts, "
-            "and a final risk level verdict with justification. "
-            "No em-dashes. No emojis."
-        ),
-        agent=risk_forecaster,
-        context=[monitor_task, anomaly_task],
+        prior_outputs=[monitor_out, anomaly_out],
     )
 
-    portfolio_task = Task(
-        description=(
+    # Agent 4: Portfolio Optimizer -- receives monitor + risk outputs as context
+    portfolio_out = _call_groq_agent(
+        client=client,
+        model=model,
+        system=_BACKSTORY_PORTFOLIO_OPTIMIZER,
+        task_desc=(
             "You are given the current portfolio and two optimized alternatives. "
             "Write a portfolio recommendation covering exactly these 4 points:\n\n"
             "1. PERFORMANCE COMPARISON: Compare current vs Max Sharpe vs Min Vol "
@@ -881,54 +803,227 @@ def run_risk_analysis_crew(context: dict) -> dict:
             "Do NOT use em-dashes. Do NOT use emojis. Cite specific numbers and ticker names.\n\n"
             f"PORTFOLIO DATA:\n{_fmt_portfolio(context)}"
         ),
-        expected_output=(
-            "A 4-section portfolio recommendation (230-280 words) covering: "
-            "performance comparison with explicit numbers, "
-            "weight analysis with 2-3 specific changes and their purpose, "
-            "regime-aware risk assessment, "
-            "and a concrete ticker-level reallocation recommendation. "
-            "No em-dashes. No emojis."
-        ),
-        agent=portfolio_optimizer,
-        context=[monitor_task, risk_task],
+        prior_outputs=[monitor_out, risk_out],
     )
 
+    return {
+        "market_monitor": monitor_out,
+        "anomaly_detector": anomaly_out,
+        "risk_forecaster": risk_out,
+        "portfolio_optimizer": portfolio_out,
+    }
+
     # ----------------------------------------------------------------
-    # Assemble and run crew
+    # CrewAI implementation -- kept for reference, currently inactive.
+    # To reactivate: restore crewai to requirements.txt, swap the
+    # active block above for this block, and restore _create_llm_crewai.
     # ----------------------------------------------------------------
 
-    crew = Crew(
-        agents=[market_monitor, anomaly_detector, risk_forecaster, portfolio_optimizer],
-        tasks=[monitor_task, anomaly_task, risk_task, portfolio_task],
-        process=Process.sequential,
-        verbose=False,
-    )
-
-    try:
-        result = crew.kickoff()
-
-        outputs = {
-            "market_monitor": "",
-            "anomaly_detector": "",
-            "risk_forecaster": "",
-            "portfolio_optimizer": "",
-        }
-
-        tasks_output = getattr(result, "tasks_output", None)
-        if tasks_output and len(tasks_output) >= 4:
-            keys = list(outputs.keys())
-            for i, key in enumerate(keys):
-                raw = getattr(tasks_output[i], "raw", "") or ""
-                # Clean any em-dashes the LLM might have slipped in
-                clean = raw.strip().replace("\u2014", " -- ").replace("\u2013", " - ")
-                outputs[key] = clean
-        elif hasattr(result, "raw"):
-            raw = str(result.raw).strip()
-            raw = raw.replace("\u2014", " -- ").replace("\u2013", " - ")
-            outputs["portfolio_optimizer"] = raw
-
-        return outputs
-
-    except Exception as exc:
-        logger.error("CrewAI kickoff failed: %s", exc)
-        return empty
+    # try:
+    #     from crewai import Agent, Task, Crew, Process
+    # except ImportError:
+    #     logger.error("crewai not installed.")
+    #     return empty
+    #
+    # llm = _create_llm_crewai()   # needs crewai.LLM wrapping litellm/groq
+    # if llm is None:
+    #     return empty
+    #
+    # market_monitor = Agent(
+    #     role="Market Monitor",
+    #     goal=(
+    #         "Summarize the portfolio's current market conditions, volatility regime, "
+    #         "return distribution characteristics, correlation structure, and the most "
+    #         "notable return events. Flag whether the current environment is elevated "
+    #         "or subdued relative to the historical baseline."
+    #     ),
+    #     backstory=_BACKSTORY_MARKET_MONITOR,
+    #     llm=llm,
+    #     verbose=False,
+    #     allow_delegation=False,
+    # )
+    # anomaly_detector = Agent(
+    #     role="Anomaly Detector",
+    #     goal=(
+    #         "Interpret the list of anomaly dates and their return magnitudes. "
+    #         "Compare what both detection methods (Z-score and Isolation Forest) "
+    #         "found, with emphasis on dates where both agree. Classify anomalies "
+    #         "as clustered vs isolated and infer the likely economic drivers. "
+    #         "State clearly whether the anomaly pattern is a systemic risk signal "
+    #         "or isolated noise."
+    #     ),
+    #     backstory=_BACKSTORY_ANOMALY_DETECTOR,
+    #     llm=llm,
+    #     verbose=False,
+    #     allow_delegation=False,
+    # )
+    # risk_forecaster = Agent(
+    #     role="Risk Forecaster",
+    #     goal=(
+    #         "Interpret the four VaR estimates and explain why they differ. "
+    #         "Compute and explain the ES/VaR ratio as a fat-tail severity indicator. "
+    #         "Interpret GARCH persistence as a forward-looking signal about how long "
+    #         "current volatility will persist. Deliver a clear, specific verdict on "
+    #         "both backtest results (Kupiec and Christoffersen) in plain language. "
+    #         "State the overall risk level: acceptable, elevated, or critical."
+    #     ),
+    #     backstory=_BACKSTORY_RISK_FORECASTER,
+    #     llm=llm,
+    #     verbose=False,
+    #     allow_delegation=False,
+    # )
+    # portfolio_optimizer = Agent(
+    #     role="Portfolio Optimizer",
+    #     goal=(
+    #         "Compare the current portfolio versus Max Sharpe and Min Volatility "
+    #         "alternatives using full weight tables. Quantify the Sharpe ratio and "
+    #         "volatility improvement available. Recommend specific ticker-level "
+    #         "weight changes from the delta table. Tie the recommendation to the "
+    #         "current volatility regime and the risk forecaster's findings."
+    #     ),
+    #     backstory=_BACKSTORY_PORTFOLIO_OPTIMIZER,
+    #     llm=llm,
+    #     verbose=False,
+    #     allow_delegation=False,
+    # )
+    # monitor_task = Task(
+    #     description=(
+    #         "You are given the following market data for a user-defined portfolio. "
+    #         "Write a structured market summary covering exactly these 4 points:\n\n"
+    #         "1. VOLATILITY REGIME: State the current regime (LOW/MID/HIGH) and compare "
+    #         "the recent 20-day vol to the full-period annualized vol. Is risk building or subsiding?\n"
+    #         "2. RETURN DISTRIBUTION: Comment on mean, volatility, skewness (fat left tail?), "
+    #         "and excess kurtosis (fatter tails than normal?). State whether the distribution "
+    #         "is dangerous for VaR models that assume normality.\n"
+    #         "3. CORRELATION STRUCTURE: Identify the highest pairwise correlations. "
+    #         "High correlation reduces diversification benefit during drawdowns.\n"
+    #         "4. NOTABLE EVENTS: Comment on the 5 worst return days. Were they isolated or clustered?\n\n"
+    #         "Do NOT use em-dashes. Do NOT use emojis. Use specific numbers from the data.\n\n"
+    #         f"MARKET DATA:\n{_fmt_market(context)}"
+    #     ),
+    #     expected_output=(
+    #         "A 4-section structured market summary (200-280 words) covering: "
+    #         "volatility regime assessment with specific vol numbers, "
+    #         "return distribution analysis with skewness/kurtosis interpretation, "
+    #         "correlation observations, and worst-day event comments. "
+    #         "Every claim is supported by a specific number from the data. "
+    #         "No em-dashes. No emojis."
+    #     ),
+    #     agent=market_monitor,
+    # )
+    # anomaly_task = Task(
+    #     description=(
+    #         "You are given anomaly detection results for the portfolio. "
+    #         "Write an anomaly analysis covering exactly these 4 points:\n\n"
+    #         "1. DETECTION COUNTS: State how many anomalies each method found and "
+    #         "how many dates both methods agreed on. Agreement increases confidence.\n"
+    #         "2. SEVERITY: For the most extreme anomaly dates, state the actual "
+    #         "return magnitude (provided in the data). A -8% day is fundamentally "
+    #         "different from a -2% day even if both are anomalies statistically.\n"
+    #         "3. CLUSTERING vs ISOLATION: Are anomalies spread across the period "
+    #         "or bunched together? Clustering signals a regime change or sustained crisis.\n"
+    #         "4. ECONOMIC CONTEXT: For anomaly dates you can place in context "
+    #         "(e.g., early 2020, late 2022), name the likely market driver. "
+    #         "For dates without obvious context, state they appear isolated.\n\n"
+    #         "Do NOT use em-dashes. Do NOT use emojis. Reference specific dates and return values.\n\n"
+    #         f"ANOMALY DATA:\n{_fmt_anomaly(context)}"
+    #     ),
+    #     expected_output=(
+    #         "A 4-section anomaly analysis (200-280 words) covering: "
+    #         "detection method counts and agreement, "
+    #         "severity assessment with actual return magnitudes on worst anomaly days, "
+    #         "clustering vs isolation classification, "
+    #         "and economic context for the most significant events. "
+    #         "No em-dashes. No emojis."
+    #     ),
+    #     agent=anomaly_detector,
+    #     context=[monitor_task],
+    # )
+    # risk_task = Task(
+    #     description=(
+    #         "You are given the complete VaR, ES, GARCH, and backtest results. "
+    #         "Write a risk assessment covering exactly these 5 points:\n\n"
+    #         "1. VaR METHOD COMPARISON: The 4 methods will disagree. Explain WHY. "
+    #         "If GARCH > Historical, it means current vol is above the long-run average. "
+    #         "If Parametric < Historical, it means the return distribution has fatter tails "
+    #         "than a normal distribution (confirmed by excess kurtosis > 0).\n"
+    #         "2. ES/VaR RATIO: Use the historical ES/VaR ratio provided. State clearly "
+    #         "whether the tail is normal (ratio ~1.25), moderate (1.25-1.5), severe (1.5-2.0), "
+    #         "or extreme (>2.0). This ratio tells you how bad losses get GIVEN a VaR breach.\n"
+    #         "3. GARCH SIGNAL: State the persistence value and what it means. "
+    #         "High persistence (>0.95) means today's elevated volatility will persist for weeks "
+    #         "and the GARCH VaR is the most relevant forward-looking estimate.\n"
+    #         "4. BACKTEST VERDICT: State clearly whether Kupiec PASSES or FAILS and why. "
+    #         "Then state whether Christoffersen PASSES or FAILS and why. "
+    #         "A Christoffersen failure is more concerning than a Kupiec failure.\n"
+    #         "5. OVERALL RISK VERDICT: Synthesize into one of: "
+    #         "LOW RISK / MODERATE RISK / ELEVATED RISK / HIGH RISK, with one-sentence justification.\n\n"
+    #         "Do NOT use em-dashes. Do NOT use emojis. Cite specific numbers.\n\n"
+    #         f"RISK DATA:\n{_fmt_risk(context)}"
+    #     ),
+    #     expected_output=(
+    #         "A 5-section risk interpretation (230-280 words) covering: "
+    #         "VaR method comparison with specific numbers and reasons for divergence, "
+    #         "ES/VaR ratio interpretation, "
+    #         "GARCH persistence interpretation as a forward vol signal, "
+    #         "plain-language Kupiec and Christoffersen verdicts, "
+    #         "and a final risk level verdict with justification. "
+    #         "No em-dashes. No emojis."
+    #     ),
+    #     agent=risk_forecaster,
+    #     context=[monitor_task, anomaly_task],
+    # )
+    # portfolio_task = Task(
+    #     description=(
+    #         "You are given the current portfolio and two optimized alternatives. "
+    #         "Write a portfolio recommendation covering exactly these 4 points:\n\n"
+    #         "1. PERFORMANCE COMPARISON: Compare current vs Max Sharpe vs Min Vol "
+    #         "on three metrics: annual volatility, expected return, and Sharpe ratio. "
+    #         "Quantify the Sharpe ratio gap between current and optimal. "
+    #         "If the Max Sharpe Sharpe ratio is materially higher, say by how much.\n"
+    #         "2. WEIGHT ANALYSIS: Look at the weight delta table (current to Max Sharpe). "
+    #         "Identify the 2-3 largest weight changes. Explain what each change achieves "
+    #         "(e.g., reducing a high-vol single name, adding a lower-vol diversifier).\n"
+    #         "3. REGIME-AWARE ASSESSMENT: Given the current volatility regime "
+    #         "({context['current_regime'].upper()}), state whether the current "
+    #         "portfolio concentration is appropriate. In a HIGH vol regime, "
+    #         "concentrated single-name exposure is riskier. In a LOW regime, "
+    #         "there is more room for active positions.\n"
+    #         "4. RECOMMENDATION: Give a clear, specific recommendation. "
+    #         "Name specific tickers to reduce and increase and by how much (from the delta table). "
+    #         "If the current portfolio is already near-optimal, say so with reasoning.\n\n"
+    #         "Do NOT use em-dashes. Do NOT use emojis. Cite specific numbers and ticker names.\n\n"
+    #         f"PORTFOLIO DATA:\n{_fmt_portfolio(context)}"
+    #     ),
+    #     expected_output=(
+    #         "A 4-section portfolio recommendation (230-280 words) covering: "
+    #         "performance comparison with explicit numbers, "
+    #         "weight analysis with 2-3 specific changes and their purpose, "
+    #         "regime-aware risk assessment, "
+    #         "and a concrete ticker-level reallocation recommendation. "
+    #         "No em-dashes. No emojis."
+    #     ),
+    #     agent=portfolio_optimizer,
+    #     context=[monitor_task, risk_task],
+    # )
+    # crew = Crew(
+    #     agents=[market_monitor, anomaly_detector, risk_forecaster, portfolio_optimizer],
+    #     tasks=[monitor_task, anomaly_task, risk_task, portfolio_task],
+    #     process=Process.sequential,
+    #     verbose=False,
+    # )
+    # try:
+    #     result = crew.kickoff()
+    #     outputs = {k: "" for k in empty}
+    #     tasks_output = getattr(result, "tasks_output", None)
+    #     if tasks_output and len(tasks_output) >= 4:
+    #         for i, key in enumerate(outputs.keys()):
+    #             raw = getattr(tasks_output[i], "raw", "") or ""
+    #             outputs[key] = raw.strip().replace("\u2014", " -- ").replace("\u2013", " - ")
+    #     elif hasattr(result, "raw"):
+    #         raw = str(result.raw).strip().replace("\u2014", " -- ").replace("\u2013", " - ")
+    #         outputs["portfolio_optimizer"] = raw
+    #     return outputs
+    # except Exception as exc:
+    #     logger.error("CrewAI kickoff failed: %s", exc)
+    #     return empty

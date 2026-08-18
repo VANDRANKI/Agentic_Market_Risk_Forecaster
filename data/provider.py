@@ -23,6 +23,11 @@ import yfinance as yf
 
 logger = logging.getLogger(__name__)
 
+# A cache may legitimately end a few days before the requested end date,
+# since the last row is the last trading day. Longer gaps mean the cache
+# was written for an earlier window and should be refetched.
+_CACHE_END_TOLERANCE_DAYS = 5
+
 
 class DataProvider:
     """
@@ -194,13 +199,33 @@ class DataProvider:
                 else:
                     logger.warning("Ticker %s not found in yfinance response.", ticker)
         else:
-            # Flat columns (should not happen in yfinance 1.x but handle anyway)
-            if "Close" in raw.columns:
-                for ticker in tickers:
-                    series = raw["Close"].dropna()
-                    series.name = ticker
-                    if not series.empty:
-                        result[ticker] = series
+            # Flat columns (should not happen in yfinance 1.x but handle anyway).
+            #
+            # raw["Close"] is a single unlabelled column here. Handing it to every
+            # requested ticker would give each one identical prices, which silently
+            # collapses a multi-asset portfolio into N copies of one asset:
+            # every pairwise correlation becomes 1.0, diversification disappears
+            # and the resulting VaR describes a book the user does not hold.
+            # There is no way to attribute one column to several tickers, so only
+            # the unambiguous single-ticker case is accepted.
+            if "Close" not in raw.columns:
+                logger.warning("yfinance output has no 'Close' column.")
+                return {}
+
+            if len(tickers) != 1:
+                logger.warning(
+                    "yfinance returned flat columns for %d tickers. Cannot tell "
+                    "which ticker the single 'Close' column belongs to, so no "
+                    "prices were taken from this response.",
+                    len(tickers),
+                )
+                return {}
+
+            series = raw["Close"].dropna()
+            if not series.empty:
+                series = series.copy()
+                series.name = tickers[0]
+                result[tickers[0]] = series
 
         return result
 
@@ -281,8 +306,22 @@ class DataProvider:
             start_dt = pd.to_datetime(start).normalize()
             end_dt = pd.to_datetime(end).normalize()
 
-            # Only use cache if it covers the requested start date
+            # Only use the cache if it covers the requested window at BOTH ends.
+            # Checking the start alone means a cache written for an earlier end
+            # date is still accepted, and the caller silently receives a
+            # truncated series instead of a refetch.
             if series.index.min() > start_dt:
+                return None
+
+            # The last cached row is the last trading day, so it legitimately
+            # trails the requested end over weekends and holidays. Allow a few
+            # days of slack before treating the cache as short.
+            requested_end = min(end_dt, pd.Timestamp(datetime.now().date()))
+            if series.index.max() < requested_end - pd.Timedelta(days=_CACHE_END_TOLERANCE_DAYS):
+                logger.info(
+                    "Cache for %s ends %s but %s was requested. Refetching.",
+                    ticker, series.index.max().date(), requested_end.date(),
+                )
                 return None
 
             sliced = series.loc[start_dt:end_dt]

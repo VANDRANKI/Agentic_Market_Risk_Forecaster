@@ -192,3 +192,98 @@ class TestLiveDataFetch:
         start = (datetime.today() - timedelta(days=90)).strftime("%Y-%m-%d")
         with pytest.raises(ValueError):
             self.provider.fetch_prices(["FAKETICKERXYZ999"], start, end)
+
+
+# ---------------------------------------------------------------------------
+# yfinance response shape handling
+# ---------------------------------------------------------------------------
+
+
+class TestFlatColumnResponse:
+    """yfinance 1.x returns MultiIndex columns, but the flat-column branch is
+    still reachable. It must never hand the same column to several tickers."""
+
+    @staticmethod
+    def _flat_raw(n: int = 5) -> pd.DataFrame:
+        idx = pd.date_range("2024-01-01", periods=n)
+        return pd.DataFrame(
+            {"Open": range(n), "Close": np.arange(10.0, 10.0 + n), "Volume": [1] * n},
+            index=idx,
+        )
+
+    def test_single_ticker_flat_columns_is_accepted(self, monkeypatch, tmp_path):
+        provider = DataProvider(cache_dir=str(tmp_path))
+        monkeypatch.setattr(
+            "data.provider.yf.download",
+            lambda *a, **k: self._flat_raw(),
+        )
+        out = provider._fetch_yfinance_batch(["SPY"], "2024-01-01", "2024-01-06")
+        assert list(out) == ["SPY"]
+        assert out["SPY"].name == "SPY"
+        assert len(out["SPY"]) == 5
+
+    def test_multi_ticker_flat_columns_returns_nothing(self, monkeypatch, tmp_path):
+        """Regression: every ticker used to receive raw["Close"], so a 3-asset
+        portfolio silently became 3 copies of one asset. Pairwise correlation
+        went to 1.0 and the resulting VaR described a book the user never held.
+        There is no way to attribute one unlabelled column to three tickers, so
+        the correct behaviour is to take nothing from this response."""
+        provider = DataProvider(cache_dir=str(tmp_path))
+        monkeypatch.setattr(
+            "data.provider.yf.download",
+            lambda *a, **k: self._flat_raw(),
+        )
+        out = provider._fetch_yfinance_batch(
+            ["SPY", "AAPL", "MSFT"], "2024-01-01", "2024-01-06"
+        )
+        assert out == {}
+
+    def test_missing_close_column_returns_nothing(self, monkeypatch, tmp_path):
+        provider = DataProvider(cache_dir=str(tmp_path))
+        raw = pd.DataFrame({"Open": [1.0, 2.0]}, index=pd.date_range("2024-01-01", periods=2))
+        monkeypatch.setattr("data.provider.yf.download", lambda *a, **k: raw)
+        assert provider._fetch_yfinance_batch(["SPY"], "2024-01-01", "2024-01-03") == {}
+
+
+# ---------------------------------------------------------------------------
+# Cache window coverage
+# ---------------------------------------------------------------------------
+
+
+class TestCacheEndCoverage:
+    def test_cache_ending_early_is_rejected(self, tmp_path):
+        """Regression: _load_cache checked that the cache covered the requested
+        START but never the END, so a cache written for an earlier window was
+        reused and the caller received a silently truncated series."""
+        provider = DataProvider(cache_dir=str(tmp_path))
+        old = pd.Series(
+            np.arange(100.0, 200.0),
+            index=pd.date_range("2024-01-01", periods=100, freq="B"),
+            name="SPY",
+        )
+        provider._save_cache("SPY", old)
+
+        # ask for a window running well past what the cache holds
+        got = provider._load_cache("SPY", "2024-01-01", "2026-08-18")
+        assert got is None, "a cache ending years early must not satisfy the request"
+
+    def test_cache_covering_window_is_used(self, tmp_path):
+        provider = DataProvider(cache_dir=str(tmp_path))
+        series = make_fake_series("SPY", n=60)
+        provider._save_cache("SPY", series)
+
+        start = series.index.min().strftime("%Y-%m-%d")
+        end = series.index.max().strftime("%Y-%m-%d")
+        got = provider._load_cache("SPY", start, end)
+        assert got is not None and not got.empty
+
+    def test_weekend_gap_is_tolerated(self, tmp_path):
+        """The last cached row is the last trading day, so trailing the request
+        by a couple of days is normal and must not force a refetch."""
+        provider = DataProvider(cache_dir=str(tmp_path))
+        series = make_fake_series("SPY", n=60)
+        provider._save_cache("SPY", series)
+
+        start = series.index.min().strftime("%Y-%m-%d")
+        end = (series.index.max() + timedelta(days=2)).strftime("%Y-%m-%d")
+        assert provider._load_cache("SPY", start, end) is not None

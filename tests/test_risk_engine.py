@@ -342,6 +342,48 @@ class TestRegimeClassifier:
         regime = current_regime(NORMAL_RETURNS)
         assert regime in {"low", "mid", "high"}
 
+    def test_expanding_mode_values_valid(self):
+        regimes = regime_classifier(NORMAL_RETURNS, window=20, expanding=True)
+        assert set(regimes.unique()).issubset({"low", "mid", "high"})
+        assert len(regimes) == len(regime_classifier(NORMAL_RETURNS, window=20))
+
+    def test_expanding_mode_is_point_in_time(self):
+        """Labels from expanding mode must not change when future data arrives.
+
+        The default full-history mode recomputes its 33rd/67th percentiles over
+        the whole series, so adding a volatile future period relabels the past.
+        That is look-ahead bias and makes the labels unusable as a backtest
+        signal. Expanding mode uses only data available at each point.
+        """
+        rng = np.random.default_rng(1)
+        calm = rng.normal(0, 0.005, 300)
+        wild = rng.normal(0, 0.030, 300)
+        full_series = pd.Series(np.concatenate([calm, wild]))
+        first_half = full_series.iloc[:300]
+
+        pit_full = regime_classifier(full_series, window=20, expanding=True)
+        pit_partial = regime_classifier(first_half, window=20, expanding=True)
+        common = pit_full.index.intersection(pit_partial.index)
+        assert len(common) > 0
+        pd.testing.assert_series_equal(
+            pit_full.loc[common], pit_partial.loc[common], check_names=False
+        )
+
+    def test_default_mode_has_look_ahead_bias(self):
+        """Documents why expanding mode exists: the default relabels the past."""
+        rng = np.random.default_rng(1)
+        full_series = pd.Series(
+            np.concatenate([rng.normal(0, 0.005, 300), rng.normal(0, 0.030, 300)])
+        )
+        full = regime_classifier(full_series, window=20)
+        partial = regime_classifier(full_series.iloc[:300], window=20)
+        common = full.index.intersection(partial.index)
+        changed = (full.loc[common] != partial.loc[common]).sum()
+        assert changed > 0, (
+            "default mode is expected to relabel past days once future data "
+            "is included; if this no longer holds the docstring needs updating"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Return statistics

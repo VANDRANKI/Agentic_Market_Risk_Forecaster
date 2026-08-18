@@ -78,6 +78,30 @@ class TestComputeReturns:
         assert isinstance(r, pd.DataFrame)
         assert r.shape[0] == len(df_prices) - 1
 
+    def test_log_returns_drop_non_positive_prices(self):
+        """A zero or negative price must not leak inf into the return series.
+
+        Regression: np.log(0/x) is -inf and np.log(x/0) is +inf. Neither is
+        removed by .dropna(), so a single bad price turned std, VaR and every
+        other downstream statistic into NaN.
+        """
+        prices = pd.Series([100.0, 101.0, 0.0, 102.0, 103.0])
+        r = compute_returns(prices, method="log")
+
+        assert not np.isinf(r.values).any(), "log returns must not contain inf"
+        assert not np.isnan(r.values).any(), "log returns must not contain nan"
+        assert np.isfinite(r.std()), "std must stay finite"
+
+    def test_log_returns_drop_negative_prices(self):
+        prices = pd.Series([100.0, -5.0, 102.0])
+        r = compute_returns(prices, method="log")
+        assert np.isfinite(r.values).all()
+
+    def test_log_returns_unaffected_when_all_prices_positive(self):
+        r = compute_returns(PRICES, method="log")
+        assert len(r) == len(PRICES) - 1
+        assert np.isfinite(r.values).all()
+
 
 # ---------------------------------------------------------------------------
 # historical_var

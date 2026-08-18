@@ -31,6 +31,10 @@ def compute_returns(
     """
     Compute daily returns from a price series or DataFrame.
 
+    Non-positive prices are not valid input for log returns. They are treated
+    as missing rather than passed to np.log, which would emit -inf or +inf and
+    survive .dropna(), turning every downstream statistic into NaN.
+
     Parameters
     ----------
     prices : pd.Series or pd.DataFrame of adjusted close prices
@@ -41,7 +45,15 @@ def compute_returns(
     Returns series/DataFrame with the same type as input (first row dropped).
     """
     if method == "log":
-        result = np.log(prices / prices.shift(1)).dropna()
+        non_positive = int((prices <= 0).sum().sum()) if isinstance(prices, pd.DataFrame) else int((prices <= 0).sum())
+        if non_positive:
+            logger.warning(
+                "Dropping %d non-positive price(s) before computing log returns. "
+                "Log returns are undefined for prices <= 0.",
+                non_positive,
+            )
+        safe = prices.where(prices > 0)
+        result = np.log(safe / safe.shift(1)).dropna()
     else:
         result = prices.pct_change().dropna()
     return result

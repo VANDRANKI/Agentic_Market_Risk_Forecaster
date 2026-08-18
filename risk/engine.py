@@ -9,10 +9,14 @@ Example: VaR = 0.025 means the portfolio is expected to lose at most 2.5%
 at the given confidence level on a given day.
 """
 
+import logging
 from typing import Literal
+
 import numpy as np
 import pandas as pd
 from scipy import stats
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +59,9 @@ def compute_portfolio_returns(
     """
     Compute portfolio-level daily returns given asset returns and weights.
 
-    Weights are automatically normalized to sum to 1.
+    Weights are normalized to sum to 1 over the assets that are actually
+    present in `returns`. Tickers with no return data are dropped and a
+    warning is logged.
 
     Parameters
     ----------
@@ -66,12 +72,29 @@ def compute_portfolio_returns(
     -------
     pd.Series of daily portfolio returns
     """
-    w = pd.Series(weights)
-    w = w / w.sum()  # normalize
+    w = pd.Series(weights, dtype=float)
     common = returns.columns.intersection(w.index)
     if len(common) == 0:
         raise ValueError("No overlap between returns columns and weights keys.")
-    return (returns[common] * w[common]).sum(axis=1)
+
+    # Normalize over the assets we actually have data for. Normalizing over the
+    # full weights dict first would leave the applied weights summing to less
+    # than 1 whenever a ticker is missing from `returns`, which silently scales
+    # the portfolio return down and understates every downstream risk metric.
+    dropped = w.index.difference(common)
+    if len(dropped) > 0:
+        logger.warning(
+            "No return data for %d of %d weighted assets (%s). "
+            "Renormalizing the remaining weights to sum to 1.",
+            len(dropped), len(w), ", ".join(map(str, sorted(dropped))),
+        )
+
+    w = w[common]
+    total = float(w.sum())
+    if total == 0:
+        raise ValueError("Weights for the available assets sum to zero.")
+    w = w / total
+    return (returns[common] * w).sum(axis=1)
 
 
 # ---------------------------------------------------------------------------

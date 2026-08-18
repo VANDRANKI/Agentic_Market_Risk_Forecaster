@@ -223,6 +223,41 @@ class TestPortfolioReturns:
         with pytest.raises(ValueError):
             compute_portfolio_returns(r_df, {"AAPL": 1.0})
 
+    def test_missing_ticker_renormalizes_remaining_weights(self):
+        """Weights for tickers with no return data must not shrink the portfolio.
+
+        Regression: weights were normalized over the full dict before being
+        intersected with the available columns, so a missing ticker left the
+        applied weights summing to less than 1. That scaled portfolio returns
+        down and understated every downstream risk metric (a 20% missing weight
+        understated VaR by 20%).
+        """
+        r_df = pd.DataFrame({"A": NORMAL_RETURNS, "B": NORMAL_RETURNS * 2.0})
+        # FAILED carries 20% of the weight but has no return data
+        port = compute_portfolio_returns(
+            r_df, {"A": 0.5, "B": 0.3, "FAILED": 0.2}
+        )
+        # Remaining weights renormalize to 0.625 / 0.375
+        expected = r_df["A"] * 0.625 + r_df["B"] * 0.375
+        pd.testing.assert_series_equal(port, expected, check_names=False, rtol=1e-10)
+
+    def test_missing_ticker_does_not_understate_volatility(self):
+        """The reconstructed portfolio must have the same scale as one built
+        from the available tickers alone."""
+        r_df = pd.DataFrame({"A": NORMAL_RETURNS, "B": NORMAL_RETURNS * 2.0})
+        with_missing = compute_portfolio_returns(
+            r_df, {"A": 0.5, "B": 0.3, "FAILED": 0.2}
+        )
+        without_missing = compute_portfolio_returns(r_df, {"A": 0.5, "B": 0.3})
+        pd.testing.assert_series_equal(
+            with_missing, without_missing, check_names=False, rtol=1e-10
+        )
+
+    def test_raises_when_available_weights_sum_to_zero(self):
+        r_df = pd.DataFrame({"A": NORMAL_RETURNS, "B": NORMAL_RETURNS})
+        with pytest.raises(ValueError):
+            compute_portfolio_returns(r_df, {"A": 1.0, "B": -1.0})
+
 
 # ---------------------------------------------------------------------------
 # Drawdown

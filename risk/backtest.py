@@ -15,6 +15,27 @@ import pandas as pd
 from scipy import stats
 
 
+def _align_for_backtest(
+    returns: pd.Series,
+    var_series: pd.Series,
+) -> tuple[pd.Series, pd.Series]:
+    """Inner-join two series on a de-duplicated, chronologically sorted index.
+
+    Both callers below are order dependent, and one of them (Christoffersen)
+    exists specifically to measure whether breaches cluster in time, so the
+    pair has to be sorted before it is compared.
+
+    De-duplication matters just as much: an inner join across an index with a
+    repeated timestamp expands rather than matches, so a single duplicated date
+    inflates n_observations and quietly moves the exceedance rate. Price caches
+    are merged from several sources here, so repeated dates are a real
+    possibility rather than a theoretical one.
+    """
+    r = returns[~returns.index.duplicated(keep="first")].sort_index()
+    v = var_series[~var_series.index.duplicated(keep="first")].sort_index()
+    return r.align(v, join="inner")
+
+
 def count_exceedances(
     returns: pd.Series,
     var_series: pd.Series,
@@ -34,8 +55,7 @@ def count_exceedances(
     dict with keys: n_exceedances, n_observations, exceedance_rate,
                     exceedance_dates (list of date strings)
     """
-    aligned = returns.align(var_series, join="inner")
-    r, v = aligned[0], aligned[1]
+    r, v = _align_for_backtest(returns, var_series)
 
     violations = r < -v
     n_exc = int(violations.sum())
@@ -166,8 +186,7 @@ def christoffersen_test(
     dict with keys: statistic, p_value, reject_h0, pi01, pi11,
                     test_name, interpretation
     """
-    aligned = returns.align(var_series, join="inner")
-    r, v = aligned[0], aligned[1]
+    r, v = _align_for_backtest(returns, var_series)
 
     violations = (r < -v).astype(int).values
 
@@ -206,7 +225,13 @@ def christoffersen_test(
     p_value = float(1 - stats.chi2.cdf(lr, df=1))
     reject = p_value < 0.05
 
-    if reject:
+    if n01 + n11 == 0:
+        interp = (
+            "No VaR exceedances in the sample, so independence cannot be assessed. "
+            "The test statistic is 0 by construction here and the p-value of 1.0 is "
+            "not evidence that breaches are independent."
+        )
+    elif reject:
         interp = (
             f"Exceedances are clustered (p-value {p_value:.3f} < 0.05). "
             f"The model does not update fast enough for changing volatility. "
@@ -219,12 +244,15 @@ def christoffersen_test(
             f"No significant clustering of VaR breaches detected."
         )
 
+    n_exceedances = int(n01 + n11)
+
     return {
         "statistic": round(lr, 4),
         "p_value": round(p_value, 4),
         "reject_h0": reject,
         "pi01": round(pi01, 4),
         "pi11": round(pi11, 4),
+        "n_exceedances": n_exceedances,
         "test_name": "Christoffersen Independence",
         "interpretation": interp,
     }

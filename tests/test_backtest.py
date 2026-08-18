@@ -210,3 +210,72 @@ class TestRollingVarSeries:
         rv = rolling_var_series(r, alpha=0.05, window=100)
         # Rolling 95% VaR for N(0, 0.01) should be around 0.016
         assert 0.010 < rv.mean() < 0.025
+
+
+# ---------------------------------------------------------------------------
+# Alignment: ordering and duplicate dates
+# ---------------------------------------------------------------------------
+
+
+class TestBacktestAlignment:
+    @staticmethod
+    def _sample():
+        idx = pd.date_range("2024-01-01", periods=250, freq="B")
+        rng = np.random.default_rng(3)
+        returns = pd.Series(rng.normal(0, 0.01, 250), index=idx)
+        var_series = pd.Series(0.02, index=idx)
+        return returns, var_series
+
+    def test_duplicate_date_does_not_inflate_observations(self):
+        """Regression: an inner join across a repeated timestamp expands rather
+        than matches, so one duplicated date added a phantom observation and
+        shifted the exceedance rate. Price caches here are merged from several
+        sources, so repeated dates are a real possibility."""
+        returns, var_series = self._sample()
+        dup = pd.Series(
+            list(returns.values) + [returns.values[-1]],
+            index=returns.index.tolist() + [returns.index[-1]],
+        )
+        out = count_exceedances(dup, var_series)
+        assert out["n_observations"] == 250
+
+    def test_shuffled_input_gives_the_same_result(self):
+        """Regression: christoffersen_test measures whether breaches cluster in
+        time, but never sorted its inputs, so an out-of-order index silently
+        produced a different statistic."""
+        returns, var_series = self._sample()
+        shuffled = returns.sample(frac=1.0, random_state=1)
+
+        ordered = christoffersen_test(returns, var_series)
+        scrambled = christoffersen_test(shuffled, var_series)
+
+        assert scrambled["statistic"] == ordered["statistic"]
+        assert scrambled["pi01"] == ordered["pi01"]
+        assert scrambled["pi11"] == ordered["pi11"]
+
+    def test_count_exceedances_is_order_independent(self):
+        returns, var_series = self._sample()
+        a = count_exceedances(returns, var_series)
+        b = count_exceedances(returns.sample(frac=1.0, random_state=7), var_series)
+        assert a["n_exceedances"] == b["n_exceedances"]
+        assert a["exceedance_dates"] == b["exceedance_dates"]
+
+
+class TestChristoffersenNoExceedances:
+    def test_zero_breaches_is_reported_as_undecidable(self):
+        """A p-value of 1.0 with no breaches is a property of the construction,
+        not evidence of independence, and the wording should say so."""
+        idx = pd.date_range("2024-01-01", periods=250, freq="B")
+        calm = pd.Series(np.full(250, 0.001), index=idx)
+        var_series = pd.Series(0.02, index=idx)
+
+        out = christoffersen_test(calm, var_series)
+        assert out["n_exceedances"] == 0
+        assert "cannot be assessed" in out["interpretation"]
+        assert "independent" not in out["interpretation"].split("cannot be assessed")[0]
+
+    def test_exceedance_count_is_reported(self):
+        idx = pd.date_range("2024-01-01", periods=50, freq="B")
+        returns = pd.Series(np.full(50, -0.05), index=idx)
+        var_series = pd.Series(0.02, index=idx)
+        assert christoffersen_test(returns, var_series)["n_exceedances"] > 0

@@ -45,7 +45,9 @@ def run_full_analysis(
     tickers          : list of ticker symbols
     weights          : dict mapping ticker -> raw weight (will be normalized)
     lookback_days    : number of calendar days to look back for data
-    confidence_level : primary VaR/ES confidence (0.95 or 0.99)
+    confidence_level : which VaR/ES pair the caller intends to display.
+                       Both 95% and 99% are always computed and returned, so
+                       this does not change what the pipeline calculates.
     run_agents       : whether to run the CrewAI LLM analysis
     n_mc_sims        : number of Monte Carlo simulations
 
@@ -82,7 +84,8 @@ def run_full_analysis(
     # ------------------------------------------------------------------
     provider = DataProvider()
     end_date = datetime.today().strftime("%Y-%m-%d")
-    # Add a 60-day buffer for weekends/holidays
+    # Add a 90-day buffer so the trimmed window still has `lookback_days`
+    # trading days after weekends and market holidays are removed.
     start_date = (
         datetime.today() - timedelta(days=lookback_days + 90)
     ).strftime("%Y-%m-%d")
@@ -101,13 +104,23 @@ def run_full_analysis(
     # ------------------------------------------------------------------
     returns = compute_returns(prices, method="log")
 
-    # Normalize weights and compute portfolio returns
-    w_sum = sum(weights.values())
-    norm_weights = {k: v / w_sum for k, v in weights.items()}
-    # Only keep tickers that are in the returns DataFrame
-    norm_weights = {k: v for k, v in norm_weights.items() if k in returns.columns}
-    if not norm_weights:
+    # Drop tickers that produced no data, THEN normalize over what is left.
+    # Normalizing first and filtering after leaves the surviving weights summing
+    # to less than 1, so the book reported to the UI, the optimizer and the LLM
+    # context is only partly invested. compute_portfolio_returns renormalizes
+    # defensively, but norm_weights is also returned and displayed, so the order
+    # has to be right here too.
+    available = {k: v for k, v in weights.items() if k in returns.columns}
+    if not available:
         raise ValueError("No valid tickers after data fetch.")
+
+    w_sum = sum(available.values())
+    if w_sum == 0:
+        raise ValueError(
+            "Weights for the available tickers sum to zero, so the portfolio "
+            "cannot be normalized. Check for offsetting long and short weights."
+        )
+    norm_weights = {k: v / w_sum for k, v in available.items()}
 
     portfolio_returns = compute_portfolio_returns(returns, norm_weights)
 
@@ -116,9 +129,10 @@ def run_full_analysis(
     # ------------------------------------------------------------------
     risk_metrics: dict = {}
 
-    alpha_primary = 1 - confidence_level  # e.g. 0.05 for 95%
-    alt_alpha = 0.01 if alpha_primary != 0.01 else 0.05
-
+    # Both confidence levels are always computed and returned under explicit
+    # _95 / _99 keys; the caller picks which pair to display. confidence_level
+    # is therefore a presentation choice rather than a pipeline input, and the
+    # two locals that used to be derived from it here were never read.
     pr = portfolio_returns.dropna()
 
     # Historical

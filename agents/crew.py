@@ -150,20 +150,30 @@ def compile_analysis_context(
     agreed = sorted(z_set & if_set)
 
     # -- VaR values (in %) --
+    def _to_pct(value):
+        """Scale a decimal metric to percent, preserving None as "not available".
+
+        GARCH is the only optional model here: analysis.py sets its keys to None
+        when fitting or forecasting fails. Coercing that None to 0 would tell the
+        LLM the model estimated zero tail risk, which is both wrong and the most
+        reassuring answer the tool can give, so None is carried through instead.
+        """
+        return None if value is None else value * 100
+
     hv95 = risk_metrics.get("hist_var_95", 0) * 100
     pv95 = risk_metrics.get("param_var_95", 0) * 100
     mv95 = risk_metrics.get("mc_var_95", 0) * 100
-    gv95 = (risk_metrics.get("garch_var_95") or 0) * 100
+    gv95 = _to_pct(risk_metrics.get("garch_var_95"))
 
     hv99 = risk_metrics.get("hist_var_99", 0) * 100
     pv99 = risk_metrics.get("param_var_99", 0) * 100
     mv99 = risk_metrics.get("mc_var_99", 0) * 100
-    gv99 = (risk_metrics.get("garch_var_99") or 0) * 100
+    gv99 = _to_pct(risk_metrics.get("garch_var_99"))
 
     he95 = risk_metrics.get("hist_es_95", 0) * 100
     pe95 = risk_metrics.get("param_es_95", 0) * 100
     me95 = risk_metrics.get("mc_es_95", 0) * 100
-    ge95 = (risk_metrics.get("garch_es_95") or 0) * 100
+    ge95 = _to_pct(risk_metrics.get("garch_es_95"))
 
     # ES/VaR ratio: measures how much worse the average tail loss is vs the VaR cutoff
     # > 1.5 = fat tails requiring attention; > 2.0 = severe fat tails
@@ -171,11 +181,11 @@ def compile_analysis_context(
     es_var_ratio_param = round(pe95 / pv95, 3) if pv95 > 0 else None
 
     # Model divergence: max difference between 4 VaR 95% estimates
-    var_95_vals = [v for v in [hv95, pv95, mv95, gv95] if v > 0]
+    var_95_vals = [v for v in [hv95, pv95, mv95, gv95] if v is not None and v > 0]
     var_95_spread = round(max(var_95_vals) - min(var_95_vals), 3) if var_95_vals else 0
 
     # Historical vs GARCH divergence (tells you how much regime-conditional risk differs)
-    garch_vs_hist_pct = round(gv95 - hv95, 3) if gv95 > 0 else None
+    garch_vs_hist_pct = round(gv95 - hv95, 3) if (gv95 is not None and gv95 > 0) else None
 
     # -- Portfolio weights for all strategies --
     current_weights = (portfolio_results.get("current") or {}).get("weights", {})
@@ -261,18 +271,18 @@ def compile_analysis_context(
         "hist_var_95_pct": round(hv95, 3),
         "param_var_95_pct": round(pv95, 3),
         "mc_var_95_pct": round(mv95, 3),
-        "garch_var_95_pct": round(gv95, 3),
+        "garch_var_95_pct": None if gv95 is None else round(gv95, 3),
 
         "hist_var_99_pct": round(hv99, 3),
         "param_var_99_pct": round(pv99, 3),
         "mc_var_99_pct": round(mv99, 3),
-        "garch_var_99_pct": round(gv99, 3),
+        "garch_var_99_pct": None if gv99 is None else round(gv99, 3),
 
         # ES (%)
         "hist_es_95_pct": round(he95, 3),
         "param_es_95_pct": round(pe95, 3),
         "mc_es_95_pct": round(me95, 3),
-        "garch_es_95_pct": round(ge95, 3),
+        "garch_es_95_pct": None if ge95 is None else round(ge95, 3),
 
         # ES/VaR ratio (fat tail indicator)
         "es_var_ratio_historical": es_var_ratio_hist,
@@ -290,8 +300,10 @@ def compile_analysis_context(
 
         # GARCH
         "garch_persistence": risk_metrics.get("garch_persistence"),
-        "garch_long_run_vol_pct": round(
-            (risk_metrics.get("garch_long_run_vol") or 0) * 100, 2
+        "garch_long_run_vol_pct": (
+            None
+            if risk_metrics.get("garch_long_run_vol") is None
+            else round(risk_metrics["garch_long_run_vol"] * 100, 2)
         ),
 
         # Backtest
@@ -445,6 +457,22 @@ def _fmt_anomaly(ctx: dict) -> str:
     return "\n".join(lines)
 
 
+_MODEL_UNAVAILABLE = "unavailable (model did not converge)"
+
+
+def _fmt_pct(value, digits: int = 3) -> str:
+    """Format a percentage for the prompt, or say the model produced nothing.
+
+    Printing 0.000% for a model that failed to fit reads to the LLM as "this
+    model measured no risk", which is both false and the most reassuring thing
+    the tool could say. Only GARCH is optional here; the other estimators are
+    computed unconditionally and would raise long before this point.
+    """
+    if value is None:
+        return _MODEL_UNAVAILABLE
+    return f"{value:.{digits}f}%"
+
+
 def _fmt_risk(ctx: dict) -> str:
     """
     Format risk metrics for the Risk Forecaster agent.
@@ -455,7 +483,7 @@ def _fmt_risk(ctx: dict) -> str:
         f"  Historical Simulation: {ctx['hist_var_95_pct']:.3f}%",
         f"  Parametric (Normal): {ctx['param_var_95_pct']:.3f}%",
         f"  Monte Carlo Bootstrap: {ctx['mc_var_95_pct']:.3f}%",
-        f"  GARCH(1,1) Conditional: {ctx['garch_var_95_pct']:.3f}%",
+        f"  GARCH(1,1) Conditional: {_fmt_pct(ctx['garch_var_95_pct'])}",
         f"  -- Spread across 4 methods: {ctx['var_95_method_spread_pct']:.3f}% "
         f"(wide spread = high model uncertainty)",
         f"  -- GARCH vs Historical delta: "
@@ -466,7 +494,7 @@ def _fmt_risk(ctx: dict) -> str:
         f"  Historical: {ctx['hist_es_95_pct']:.3f}%",
         f"  Parametric: {ctx['param_es_95_pct']:.3f}%",
         f"  Monte Carlo: {ctx['mc_es_95_pct']:.3f}%",
-        f"  GARCH: {ctx['garch_es_95_pct']:.3f}%",
+        f"  GARCH: {_fmt_pct(ctx['garch_es_95_pct'])}",
         "",
         "=== ES/VaR Ratios (fat-tail indicator) ===",
         f"  Historical ES/VaR: {ctx.get('es_var_ratio_historical', 'N/A')}",
@@ -479,14 +507,15 @@ def _fmt_risk(ctx: dict) -> str:
         f"  Historical: {ctx['hist_var_99_pct']:.3f}%",
         f"  Parametric: {ctx['param_var_99_pct']:.3f}%",
         f"  Monte Carlo: {ctx['mc_var_99_pct']:.3f}%",
-        f"  GARCH: {ctx['garch_var_99_pct']:.3f}%",
+        f"  GARCH: {_fmt_pct(ctx['garch_var_99_pct'])}",
         "",
         f"10-Day VaR 95% (sqrt-of-time scaled from 1-day): {ctx['var_10d_95_pct']:.3f}%",
         f"Maximum drawdown over full period: {ctx['max_drawdown_pct']:.2f}%",
         "",
         "=== GARCH(1,1) Model ===",
-        f"  Persistence (alpha+beta): {ctx.get('garch_persistence', 'N/A')}",
-        f"  Long-run annualized vol: {ctx.get('garch_long_run_vol_pct', 'N/A')}%",
+        f"  Persistence (alpha+beta): "
+        f"{ctx.get('garch_persistence') if ctx.get('garch_persistence') is not None else _MODEL_UNAVAILABLE}",
+        f"  Long-run annualized vol: {_fmt_pct(ctx.get('garch_long_run_vol_pct'), 2)}",
         "  Persistence interpretation: > 0.95 = very slow vol mean-reversion "
         "(shocks last weeks/months), < 0.80 = fast reversion (shocks fade within days)",
         "",

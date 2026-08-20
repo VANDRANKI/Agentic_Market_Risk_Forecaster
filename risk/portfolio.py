@@ -199,9 +199,30 @@ def run_all_optimizations(
             mu = expected_returns.mean_historical_return(prices)
             S = risk_models.sample_cov(prices)
 
-            # Normalize weights to sum to 1
-            w_sum = sum(current_weights.values())
-            normalized = {k: v / w_sum for k, v in current_weights.items()}
+            # Filter to tickers actually in `prices`, THEN normalize what remains.
+            #
+            # EfficientFrontier.set_weights builds its internal weight vector as
+            # [input_weights[t] for t in self.tickers], so any key in
+            # current_weights that is not one of prices.columns is silently
+            # dropped rather than raising. Normalizing before that drop leaves
+            # the vector pypfopt actually uses summing to less than 1: a 20%
+            # weight on a ticker with no price data understated volatility by
+            # 20% in ef.portfolio_performance, with no error and no warning.
+            available = {k: v for k, v in current_weights.items() if k in prices.columns}
+            dropped = set(current_weights) - set(available)
+            if dropped:
+                logger.warning(
+                    "Current portfolio has %d weight(s) for tickers not in prices "
+                    "(%s). Renormalizing over the remaining tickers.",
+                    len(dropped), ", ".join(sorted(dropped)),
+                )
+            if not available:
+                raise ValueError("None of the current portfolio's tickers have price data.")
+
+            w_sum = sum(available.values())
+            if w_sum == 0:
+                raise ValueError("Current portfolio weights sum to zero.")
+            normalized = {k: v / w_sum for k, v in available.items()}
 
             ef = EfficientFrontier(mu, S)
             ef.set_weights(normalized)

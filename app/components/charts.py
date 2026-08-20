@@ -249,6 +249,18 @@ def chart_rolling_volatility(
     return fig
 
 
+def garch_value_to_pct(value: float | None) -> float:
+    """Scale a decimal GARCH metric to percent for chart_var_comparison.
+
+    None means GARCH did not converge (see risk/garch.py). NaN, not 0, is the
+    correct fallback for a bar chart: go.Bar simply omits a bar at a NaN
+    y-value, leaving a visible gap, whereas 0 draws a real bar at the
+    baseline that reads as "GARCH measured zero tail risk" rather than
+    "GARCH produced nothing."
+    """
+    return np.nan if value is None else value * 100
+
+
 def chart_var_comparison(var_table: pd.DataFrame, title: str = "VaR Comparison by Method") -> go.Figure:
     """
     Grouped bar chart comparing VaR estimates across methods and confidence levels.

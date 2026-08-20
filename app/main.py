@@ -502,14 +502,15 @@ def render_results(results: dict, confidence_level: float) -> None:
         # VaR comparison bar chart
         st.markdown("#### Method Comparison")
         import pandas as pd
+        from app.components.charts import garch_value_to_pct
         methods = ["Historical", "Parametric", "Monte Carlo", "GARCH"]
         var_data = {
             "Historical": [risk.get("hist_var_95", 0)*100, risk.get("hist_var_99", 0)*100],
             "Parametric": [risk.get("param_var_95", 0)*100, risk.get("param_var_99", 0)*100],
             "Monte Carlo": [risk.get("mc_var_95", 0)*100, risk.get("mc_var_99", 0)*100],
             "GARCH": [
-                (risk.get("garch_var_95") or 0)*100,
-                (risk.get("garch_var_99") or 0)*100,
+                garch_value_to_pct(risk.get("garch_var_95")),
+                garch_value_to_pct(risk.get("garch_var_99")),
             ],
         }
         var_df = pd.DataFrame(var_data, index=["95% VaR", "99% VaR"])

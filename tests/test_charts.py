@@ -14,7 +14,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from app.components.charts import chart_var_exceedance  # noqa: E402
+from app.components.charts import chart_var_exceedance, chart_var_comparison, garch_value_to_pct  # noqa: E402
 
 
 def _sample(n=60):
@@ -61,3 +61,49 @@ class TestChartVarExceedanceAlignment:
         fig = chart_var_exceedance(returns, var_series)
         scatter = next(t for t in fig.data if t.name == "Daily Return")
         assert len(scatter.x) == len(returns)
+
+
+class TestGarchValueToPct:
+    """Regression: app/main.py built the Method Comparison bar chart with
+    (risk.get("garch_var_95") or 0) * 100, the same false-reassurance shape
+    fixed earlier today in agents/crew.py. A GARCH fit that returns None
+    (risk/garch.py's documented failure signal) became a real zero-height
+    bar reading as "GARCH measured no tail risk," rather than the gap a
+    missing estimate should leave."""
+
+    def test_none_becomes_nan(self):
+        assert np.isnan(garch_value_to_pct(None))
+
+    def test_value_is_scaled_to_percent(self):
+        assert garch_value_to_pct(0.0181) == pytest.approx(1.81)
+
+    def test_genuine_zero_stays_zero_not_nan(self):
+        assert garch_value_to_pct(0.0) == 0.0
+
+
+class TestChartVarComparisonOmitsFailedGarch:
+    def test_nan_garch_produces_no_bar_value(self):
+        var_df = pd.DataFrame(
+            {
+                "Historical": [1.64, 2.33],
+                "Parametric": [1.61, 2.28],
+                "Monte Carlo": [1.63, 2.31],
+                "GARCH": [garch_value_to_pct(None), garch_value_to_pct(None)],
+            },
+            index=["95% VaR", "99% VaR"],
+        )
+        fig = chart_var_comparison(var_df)
+        garch_trace = next(t for t in fig.data if t.name == "GARCH")
+        assert all(np.isnan(v) for v in garch_trace.y)
+
+    def test_converged_garch_renders_normally(self):
+        var_df = pd.DataFrame(
+            {
+                "Historical": [1.64, 2.33],
+                "GARCH": [garch_value_to_pct(0.0181), garch_value_to_pct(0.0256)],
+            },
+            index=["95% VaR", "99% VaR"],
+        )
+        fig = chart_var_comparison(var_df)
+        garch_trace = next(t for t in fig.data if t.name == "GARCH")
+        assert list(garch_trace.y) == pytest.approx([1.81, 2.56])

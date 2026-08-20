@@ -15,6 +15,8 @@ import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
 
+from risk.backtest import align_returns_and_var
+
 # Chart color constants
 BLUE = "#3b82f6"
 GREEN = "#10b981"
@@ -149,8 +151,12 @@ def chart_var_exceedance(
     exceedance days highlighted.
     """
     r = portfolio_returns.dropna()
-    aligned = r.align(rolling_var, join="inner")
-    returns_al, var_al = aligned[0], aligned[1]
+    # Sort and de-duplicate before aligning: this is a line/marker chart drawn
+    # in index order, not sorted-by-x order, so an out-of-order index draws a
+    # zigzag rather than a clean time series, and a duplicated date (prices are
+    # merged from two sources upstream and can carry one) doubles a marker.
+    # Shares the same helper risk/backtest.py uses for the same reason.
+    returns_al, var_al = align_returns_and_var(r, rolling_var)
 
     violations = returns_al < -var_al
 

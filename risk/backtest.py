@@ -15,7 +15,7 @@ import pandas as pd
 from scipy import stats
 
 
-def _align_for_backtest(
+def align_returns_and_var(
     returns: pd.Series,
     var_series: pd.Series,
 ) -> tuple[pd.Series, pd.Series]:
@@ -55,7 +55,7 @@ def count_exceedances(
     dict with keys: n_exceedances, n_observations, exceedance_rate,
                     exceedance_dates (list of date strings)
     """
-    r, v = _align_for_backtest(returns, var_series)
+    r, v = align_returns_and_var(returns, var_series)
 
     violations = r < -v
     n_exc = int(violations.sum())
@@ -186,7 +186,7 @@ def christoffersen_test(
     dict with keys: statistic, p_value, reject_h0, pi01, pi11,
                     test_name, interpretation
     """
-    r, v = _align_for_backtest(returns, var_series)
+    r, v = align_returns_and_var(returns, var_series)
 
     violations = (r < -v).astype(int).values
 

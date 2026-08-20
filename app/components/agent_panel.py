@@ -5,6 +5,8 @@ Renders the LLM output from each of the 4 CrewAI agents in
 styled cards with color-coded borders and agent role labels.
 """
 
+import html
+
 import streamlit as st
 
 
@@ -67,6 +69,15 @@ def render_agent_card(agent_key: str, content: str) -> None:
     # Clean up any accidental em-dashes in LLM output
     content = content.replace("\u2014", " -- ").replace("\u2013", " - ")
 
+    # content is LLM-generated text embedded into a raw HTML block below
+    # (unsafe_allow_html=True). It is meant to display as plain text, per the
+    # docstring, and the container already uses white-space:pre-wrap for
+    # that, so it must be HTML-escaped here. Without this, HTML or script
+    # markup the model was steered into producing, for example through
+    # prompt injection via portfolio inputs that reach the LLM prompt, would
+    # be interpreted as live markup instead of shown as literal characters.
+    safe_content = html.escape(content)
+
     st.markdown(
         f"""
         <div class="agent-card" style="border-left: 4px solid {color}; margin-bottom: 20px;">
@@ -79,7 +90,7 @@ def render_agent_card(agent_key: str, content: str) -> None:
                 <div style="color:#94a3b8; font-size:0.85rem;">{subtitle}</div>
             </div>
             <div style="color:#e2e8f0; font-size:0.93rem; line-height:1.65;
-                        white-space:pre-wrap;">{content}</div>
+                        white-space:pre-wrap;">{safe_content}</div>
         </div>
         """,
         unsafe_allow_html=True,

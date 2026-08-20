@@ -20,11 +20,24 @@ def _regime_color(regime: str) -> str:
     return mapping.get(regime.lower(), "#94a3b8")
 
 
-def _backtest_color(reject: bool) -> str:
+def _backtest_color(reject: bool | None) -> str:
+    if reject is None:
+        return "#94a3b8"  # neutral, matches _regime_color's "unknown" fallback
     return "#ef4444" if reject else "#10b981"
 
 
-def _pval_label(p_value, reject: bool) -> str:
+def _pval_label(p_value: float | None, reject: bool | None) -> str:
+    """Format a test's pass/fail label, or say the test could not be run.
+
+    kupiec_test returns p_value=None and reject_h0=None when there were zero
+    observations to test (documented in risk/backtest.py). A caller reading
+    that dict with .get("p_value", 0) would find the key already present with
+    value None, so the 0 default never applies, and f"{None:.3f}" raises
+    TypeError. Reachable from the UI whenever a user picks a lookback short
+    enough that the rolling VaR backtest window has nothing to evaluate.
+    """
+    if p_value is None or reject is None:
+        return "N/A  (insufficient data)"
     status = "FAIL" if reject else "PASS"
     return f"{status}  (p = {p_value:.3f})"
 
@@ -176,9 +189,9 @@ def render_backtest_results(backtest_results: dict) -> None:
 
     col_a, col_b = st.columns(2)
     with col_a:
-        k_reject = kupiec.get("reject_h0", False)
+        k_reject = kupiec.get("reject_h0")
         k_color = _backtest_color(k_reject)
-        k_label = _pval_label(kupiec.get("p_value", 0), k_reject)
+        k_label = _pval_label(kupiec.get("p_value"), k_reject)
         st.markdown(
             f"""
             <div class="backtest-card" style="border-left: 4px solid {k_color};">
@@ -191,9 +204,9 @@ def render_backtest_results(backtest_results: dict) -> None:
         )
 
     with col_b:
-        c_reject = chri.get("reject_h0", False)
+        c_reject = chri.get("reject_h0")
         c_color = _backtest_color(c_reject)
-        c_label = _pval_label(chri.get("p_value", 0), c_reject)
+        c_label = _pval_label(chri.get("p_value"), c_reject)
         st.markdown(
             f"""
             <div class="backtest-card" style="border-left: 4px solid {c_color};">

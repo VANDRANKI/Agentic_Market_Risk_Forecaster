@@ -79,6 +79,25 @@ def _call_groq_agent(client, model: str, system: str, task_desc: str, prior_outp
 # ---------------------------------------------------------------------------
 
 
+def _opt_metric(strategy_result: dict | None, key: str, digits: int) -> float | None:
+    """Pull one metric from a portfolio-optimization result, preserving failure.
+
+    strategy_result is None when the optimizer found no feasible solution.
+    Returning None here (instead of defaulting to 0) lets the formatter in
+    _fmt_portfolio say the optimization failed instead of reporting a fake
+    0.000 Sharpe ratio.
+    """
+    if strategy_result is None:
+        return None
+    return round(strategy_result.get(key, 0), digits)
+
+
+def _opt_metric_pct(strategy_result: dict | None, key: str) -> float | None:
+    """Like _opt_metric, scaled to percent for volatility/expected_return."""
+    value = _opt_metric(strategy_result, key, 6)
+    return None if value is None else round(value * 100, 2)
+
+
 def compile_analysis_context(
     tickers: list[str],
     weights: dict[str, float],
@@ -318,39 +337,31 @@ def compile_analysis_context(
         "christoffersen_95_pi11": christoffersen.get("pi11"),
         "christoffersen_95_interpretation": christoffersen.get("interpretation", ""),
 
-        # Portfolio optimization with full weight tables
+        # Portfolio optimization with full weight tables.
+        #
+        # max_sharpe_portfolio / min_volatility_portfolio / run_all_optimizations's
+        # "current" branch all return None on failure (e.g. pypfopt raises "at least
+        # one of the assets must have an expected return exceeding the risk-free
+        # rate", which is common for a short lookback or a down-market period). Each
+        # metric below used to default to 0 via (result or {}).get(key, 0), so a
+        # failed optimization was reported to the LLM as a portfolio with a real 0%
+        # volatility and 0% expected return, reading as risk-free arbitrage rather
+        # than "no feasible solution." None is preserved here and rendered as a
+        # named failure by _fmt_opt_pct / _fmt_opt_num in _fmt_portfolio.
         "current_weights": current_weights,
-        "current_vol_pct": round(
-            (portfolio_results.get("current") or {}).get("volatility", 0) * 100, 2
-        ),
-        "current_return_pct": round(
-            (portfolio_results.get("current") or {}).get("expected_return", 0) * 100, 2
-        ),
-        "current_sharpe": round(
-            (portfolio_results.get("current") or {}).get("sharpe_ratio", 0), 3
-        ),
+        "current_vol_pct": _opt_metric_pct(portfolio_results.get("current"), "volatility"),
+        "current_return_pct": _opt_metric_pct(portfolio_results.get("current"), "expected_return"),
+        "current_sharpe": _opt_metric(portfolio_results.get("current"), "sharpe_ratio", 3),
 
         "max_sharpe_weights": max_sharpe_weights,
-        "max_sharpe_vol_pct": round(
-            (portfolio_results.get("max_sharpe") or {}).get("volatility", 0) * 100, 2
-        ),
-        "max_sharpe_return_pct": round(
-            (portfolio_results.get("max_sharpe") or {}).get("expected_return", 0) * 100, 2
-        ),
-        "max_sharpe_sharpe": round(
-            (portfolio_results.get("max_sharpe") or {}).get("sharpe_ratio", 0), 3
-        ),
+        "max_sharpe_vol_pct": _opt_metric_pct(portfolio_results.get("max_sharpe"), "volatility"),
+        "max_sharpe_return_pct": _opt_metric_pct(portfolio_results.get("max_sharpe"), "expected_return"),
+        "max_sharpe_sharpe": _opt_metric(portfolio_results.get("max_sharpe"), "sharpe_ratio", 3),
 
         "min_vol_weights": min_vol_weights,
-        "min_vol_vol_pct": round(
-            (portfolio_results.get("min_vol") or {}).get("volatility", 0) * 100, 2
-        ),
-        "min_vol_return_pct": round(
-            (portfolio_results.get("min_vol") or {}).get("expected_return", 0) * 100, 2
-        ),
-        "min_vol_sharpe": round(
-            (portfolio_results.get("min_vol") or {}).get("sharpe_ratio", 0), 3
-        ),
+        "min_vol_vol_pct": _opt_metric_pct(portfolio_results.get("min_vol"), "volatility"),
+        "min_vol_return_pct": _opt_metric_pct(portfolio_results.get("min_vol"), "expected_return"),
+        "min_vol_sharpe": _opt_metric(portfolio_results.get("min_vol"), "sharpe_ratio", 3),
 
         "weight_delta_max_sharpe": weight_delta_max_sharpe,
     }
@@ -473,6 +484,30 @@ def _fmt_pct(value, digits: int = 3) -> str:
     return f"{value:.{digits}f}%"
 
 
+_OPTIMIZATION_UNAVAILABLE = "unavailable (optimizer found no feasible solution)"
+
+
+def _fmt_opt_pct(value, digits: int = 1) -> str:
+    """Format a portfolio-optimization percentage, or say the optimizer failed.
+
+    max_sharpe_portfolio and min_volatility_portfolio return None when pypfopt
+    cannot find a feasible solution, for example when no asset's expected
+    return exceeds the risk-free rate. Printing 0.0% for that reads as a real
+    zero-volatility, zero-return portfolio (risk-free arbitrage) rather than
+    "the optimizer produced nothing," so None is named instead of zeroed.
+    """
+    if value is None:
+        return _OPTIMIZATION_UNAVAILABLE
+    return f"{value:.{digits}f}%"
+
+
+def _fmt_opt_num(value, digits: int = 3) -> str:
+    """Like _fmt_opt_pct but for a bare ratio (Sharpe), no percent sign."""
+    if value is None:
+        return _OPTIMIZATION_UNAVAILABLE
+    return f"{value:.{digits}f}"
+
+
 def _fmt_risk(ctx: dict) -> str:
     """
     Format risk metrics for the Risk Forecaster agent.
@@ -557,23 +592,23 @@ def _fmt_portfolio(ctx: dict) -> str:
         f"Analysis period return: {ctx['portfolio_mean_annual_pct']:.1f}% annualized",
         "",
         "=== Current Portfolio ===",
-        f"  Annual volatility: {ctx['current_vol_pct']:.1f}%",
-        f"  Expected return: {ctx['current_return_pct']:.1f}%",
-        f"  Sharpe ratio: {ctx['current_sharpe']:.3f}",
+        f"  Annual volatility: {_fmt_opt_pct(ctx['current_vol_pct'])}",
+        f"  Expected return: {_fmt_opt_pct(ctx['current_return_pct'])}",
+        f"  Sharpe ratio: {_fmt_opt_num(ctx['current_sharpe'])}",
         "  Weights:",
         fmt_weights(ctx.get("current_weights", {})),
         "",
         "=== Max Sharpe Portfolio ===",
-        f"  Annual volatility: {ctx['max_sharpe_vol_pct']:.1f}%",
-        f"  Expected return: {ctx['max_sharpe_return_pct']:.1f}%",
-        f"  Sharpe ratio: {ctx['max_sharpe_sharpe']:.3f}",
+        f"  Annual volatility: {_fmt_opt_pct(ctx['max_sharpe_vol_pct'])}",
+        f"  Expected return: {_fmt_opt_pct(ctx['max_sharpe_return_pct'])}",
+        f"  Sharpe ratio: {_fmt_opt_num(ctx['max_sharpe_sharpe'])}",
         "  Weights:",
         fmt_weights(ctx.get("max_sharpe_weights", {})),
         "",
         "=== Minimum Volatility Portfolio ===",
-        f"  Annual volatility: {ctx['min_vol_vol_pct']:.1f}%",
-        f"  Expected return: {ctx['min_vol_return_pct']:.1f}%",
-        f"  Sharpe ratio: {ctx['min_vol_sharpe']:.3f}",
+        f"  Annual volatility: {_fmt_opt_pct(ctx['min_vol_vol_pct'])}",
+        f"  Expected return: {_fmt_opt_pct(ctx['min_vol_return_pct'])}",
+        f"  Sharpe ratio: {_fmt_opt_num(ctx['min_vol_sharpe'])}",
         "  Weights:",
         fmt_weights(ctx.get("min_vol_weights", {})),
         "",
@@ -592,12 +627,12 @@ def _fmt_portfolio(ctx: dict) -> str:
     lines += [
         "",
         "Performance comparison:",
-        f"  Current Sharpe: {ctx['current_sharpe']:.3f} | "
-        f"Max Sharpe: {ctx['max_sharpe_sharpe']:.3f} | "
-        f"Min Vol: {ctx['min_vol_sharpe']:.3f}",
-        f"  Current vol: {ctx['current_vol_pct']:.1f}% | "
-        f"Max Sharpe vol: {ctx['max_sharpe_vol_pct']:.1f}% | "
-        f"Min vol: {ctx['min_vol_vol_pct']:.1f}%",
+        f"  Current Sharpe: {_fmt_opt_num(ctx['current_sharpe'])} | "
+        f"Max Sharpe: {_fmt_opt_num(ctx['max_sharpe_sharpe'])} | "
+        f"Min Vol: {_fmt_opt_num(ctx['min_vol_sharpe'])}",
+        f"  Current vol: {_fmt_opt_pct(ctx['current_vol_pct'])} | "
+        f"Max Sharpe vol: {_fmt_opt_pct(ctx['max_sharpe_vol_pct'])} | "
+        f"Min vol: {_fmt_opt_pct(ctx['min_vol_vol_pct'])}",
     ]
     return "\n".join(lines)
 

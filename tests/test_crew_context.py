@@ -14,7 +14,15 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from agents.crew import _fmt_pct, _MODEL_UNAVAILABLE, compile_analysis_context  # noqa: E402
+from agents.crew import (  # noqa: E402
+    _fmt_pct,
+    _fmt_opt_pct,
+    _fmt_opt_num,
+    _fmt_portfolio,
+    _MODEL_UNAVAILABLE,
+    _OPTIMIZATION_UNAVAILABLE,
+    compile_analysis_context,
+)
 
 
 def _frame(n=120):
@@ -39,10 +47,10 @@ BASE_METRICS = {
 }
 
 
-def _context(extra):
+def _context(extra=None, portfolio_results=None):
     prices, returns, port = _frame()
     metrics = dict(BASE_METRICS)
-    metrics.update(extra)
+    metrics.update(extra or {})
     return compile_analysis_context(
         tickers=["AAA", "BBB"],
         weights={"AAA": 0.5, "BBB": 0.5},
@@ -51,9 +59,17 @@ def _context(extra):
         portfolio_returns=port,
         risk_metrics=metrics,
         backtest_results={},
-        portfolio_results={},
+        portfolio_results=portfolio_results or {},
         anomalies={},
     )
+
+
+_SUCCESSFUL_STRATEGY = {
+    "weights": {"AAA": 0.5, "BBB": 0.5},
+    "volatility": 0.15,
+    "expected_return": 0.08,
+    "sharpe_ratio": 0.4,
+}
 
 
 class TestFmtPct:
@@ -101,3 +117,69 @@ class TestFailedGarchIsNotReportedAsZeroRisk:
         ctx = _context({"garch_var_95": 0.0400})
         assert ctx["var_95_method_spread_pct"] > 2.0
         assert ctx["garch_vs_hist_var_95_delta_pct"] is not None
+
+
+class TestFmtOptHelpers:
+    def test_none_is_named_not_zeroed(self):
+        assert _fmt_opt_pct(None) == _OPTIMIZATION_UNAVAILABLE
+        assert _fmt_opt_num(None) == _OPTIMIZATION_UNAVAILABLE
+
+    def test_value_is_formatted(self):
+        assert _fmt_opt_pct(18.0) == "18.0%"
+        assert _fmt_opt_num(0.65) == "0.650"
+
+    def test_genuine_zero_is_not_mistaken_for_missing(self):
+        assert _fmt_opt_pct(0.0) == "0.0%"
+        assert _fmt_opt_num(0.0) == "0.000"
+
+
+class TestFailedOptimizationIsNotReportedAsZeroReturnPortfolio:
+    """Regression: max_sharpe_portfolio / min_volatility_portfolio return None
+    when pypfopt finds no feasible solution (e.g. no asset's expected return
+    exceeds the risk-free rate, common for a short lookback or a down market).
+    compile_analysis_context defaulted every one of nine metrics to 0 via
+    (result or {}).get(key, 0), so a failed optimization read to the LLM as a
+    portfolio with a genuine 0% volatility and 0% return: risk-free
+    arbitrage, not "the optimizer produced nothing." """
+
+    def test_failed_strategy_keeps_none_in_context(self):
+        ctx = _context(portfolio_results={
+            "current": _SUCCESSFUL_STRATEGY,
+            "max_sharpe": None,
+            "min_vol": None,
+        })
+        assert ctx["max_sharpe_vol_pct"] is None
+        assert ctx["max_sharpe_return_pct"] is None
+        assert ctx["max_sharpe_sharpe"] is None
+        assert ctx["min_vol_vol_pct"] is None
+        assert ctx["min_vol_sharpe"] is None
+
+    def test_successful_strategy_still_scales_correctly(self):
+        ctx = _context(portfolio_results={"current": _SUCCESSFUL_STRATEGY})
+        assert ctx["current_vol_pct"] == pytest.approx(15.0)
+        assert ctx["current_return_pct"] == pytest.approx(8.0)
+        assert ctx["current_sharpe"] == pytest.approx(0.4)
+
+    def test_prompt_names_the_failure_not_a_fake_zero(self):
+        ctx = _context(portfolio_results={
+            "current": _SUCCESSFUL_STRATEGY,
+            "max_sharpe": None,
+            "min_vol": None,
+        })
+        out = _fmt_portfolio(ctx)
+        assert _OPTIMIZATION_UNAVAILABLE in out
+        assert "Max Sharpe vol: 0.0%" not in out
+        assert "0.000" not in out.split("Max Sharpe Portfolio")[1].split("===")[0]
+
+    def test_all_strategies_succeeding_renders_real_numbers(self):
+        ctx = _context(portfolio_results={
+            "current": _SUCCESSFUL_STRATEGY,
+            "max_sharpe": {"weights": {"AAA": 0.7, "BBB": 0.3}, "volatility": 0.18,
+                          "expected_return": 0.12, "sharpe_ratio": 0.65},
+            "min_vol": {"weights": {"AAA": 0.3, "BBB": 0.7}, "volatility": 0.10,
+                       "expected_return": 0.05, "sharpe_ratio": 0.3},
+        })
+        out = _fmt_portfolio(ctx)
+        assert _OPTIMIZATION_UNAVAILABLE not in out
+        assert "18.0%" in out
+        assert "0.650" in out

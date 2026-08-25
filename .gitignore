@@ -1,6 +1,7 @@
 # Environment
 .env
 *.env
+.streamlit/secrets.toml
 
 # Data (cached market data)
 data/raw/

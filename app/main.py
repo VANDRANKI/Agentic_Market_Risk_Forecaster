@@ -270,6 +270,18 @@ def render_sidebar() -> dict:
             existing[ticker] = round(1.0 / n, 4)
     st.session_state["sidebar_weights"] = {t: existing.get(t, 1.0 / n) for t in tickers}
 
+    if equal_weight_btn:
+        # Each weight input below is a keyed widget (key=f"w_{ticker}"). Once a
+        # keyed widget has been instantiated once, Streamlit binds its displayed
+        # value to st.session_state[key] and ignores the `value=` argument on
+        # every later rerun -- only writing to st.session_state["sidebar_weights"]
+        # (a different key) has no effect on what the widget shows. Without this,
+        # clicking "Set Equal Weights" after manually typing e.g. 0.90 into one
+        # box left that box showing 0.90 forever, even though the dict used for
+        # the "Total weight" caption and the actual analysis said 0.20.
+        for ticker in tickers:
+            st.session_state[f"w_{ticker}"] = round(1.0 / n, 4)
+
     for ticker in tickers:
         val = st.sidebar.number_input(
             ticker,

@@ -240,6 +240,11 @@ def render_sidebar() -> dict:
         init_tickers = _default_tickers
         init_weights = _default_weights
 
+    # Ticker -> weight from whichever portfolio is currently selected (preset or
+    # the Custom default). Used below to seed sidebar_weights when the preset
+    # changes, instead of falling back to equal weights for every preset.
+    preset_weight_map = dict(zip(init_tickers, init_weights))
+
     # --- Ticker input ---
     ticker_str = st.sidebar.text_area(
         "Tickers (one per line)",
@@ -260,17 +265,35 @@ def render_sidebar() -> dict:
 
     equal_weight_btn = st.sidebar.button("Set Equal Weights")
 
-    if "sidebar_weights" not in st.session_state or equal_weight_btn:
+    # Detect a preset switch so its weights get loaded exactly once, the same
+    # rerun the ticker list changes to match it. Without tracking this, a
+    # preset change looked identical to any other rerun once sidebar_weights
+    # already existed in session state, so preset["weights"] (e.g. US Indices'
+    # 30/30/20/20) was computed above and never used: the sync loop below only
+    # fills in missing tickers at an equal 1/n, leaving every preset showing
+    # equal weights (or worse, stale weights left over from a previous preset
+    # that happened to share a ticker) instead of its own weighting.
+    preset_changed = st.session_state.get("_active_preset") != selected_preset
+    st.session_state["_active_preset"] = selected_preset
+
+    if "sidebar_weights" not in st.session_state or preset_changed:
+        st.session_state["sidebar_weights"] = {
+            t: round(preset_weight_map.get(t, 1.0 / n), 4) for t in tickers
+        }
+
+    # "Set Equal Weights" always means equal, regardless of which preset (if
+    # any) is loaded -- it must not fall back to preset_weight_map above.
+    if equal_weight_btn:
         st.session_state["sidebar_weights"] = {t: round(1.0 / n, 4) for t in tickers}
 
-    # Sync session state if tickers changed
+    # Sync session state if tickers changed (e.g. manually edited while on Custom)
     existing = st.session_state.get("sidebar_weights", {})
     for ticker in tickers:
         if ticker not in existing:
             existing[ticker] = round(1.0 / n, 4)
     st.session_state["sidebar_weights"] = {t: existing.get(t, 1.0 / n) for t in tickers}
 
-    if equal_weight_btn:
+    if equal_weight_btn or preset_changed:
         # Each weight input below is a keyed widget (key=f"w_{ticker}"). Once a
         # keyed widget has been instantiated once, Streamlit binds its displayed
         # value to st.session_state[key] and ignores the `value=` argument on
@@ -278,9 +301,13 @@ def render_sidebar() -> dict:
         # (a different key) has no effect on what the widget shows. Without this,
         # clicking "Set Equal Weights" after manually typing e.g. 0.90 into one
         # box left that box showing 0.90 forever, even though the dict used for
-        # the "Total weight" caption and the actual analysis said 0.20.
+        # the "Total weight" caption and the actual analysis said 0.20. The same
+        # applies to switching presets: the widget key from a previous preset or
+        # a manual edit would otherwise keep showing its old value.
         for ticker in tickers:
-            st.session_state[f"w_{ticker}"] = round(1.0 / n, 4)
+            st.session_state[f"w_{ticker}"] = round(
+                st.session_state["sidebar_weights"].get(ticker, 1.0 / n), 4
+            )
 
     for ticker in tickers:
         val = st.sidebar.number_input(

@@ -108,3 +108,57 @@ class TestSetEqualWeightsButton:
                 f"{ticker} widget still shows {_weight_value(at, ticker)} "
                 f"after 'Set Equal Weights' was clicked; expected {equal}"
             )
+
+
+class TestPresetPortfolioLoadsItsOwnWeights:
+    """
+    Regression: selecting a predefined portfolio from the "Load preset
+    portfolio" selectbox silently ignored that preset's own weights.
+
+    render_sidebar() computed `init_weights = preset["weights"]` right next
+    to `init_tickers = preset["tickers"]`, but only init_tickers ever made it
+    into a widget (the ticker text_area's `value=`). init_weights was dead:
+    nothing wired it into st.session_state["sidebar_weights"]. Once that
+    session-state key existed from a prior render, switching presets only
+    ran the "fill in missing tickers at 1/n" sync loop, so every preset
+    displayed equal weights (or, worse, a stale weight left over from a
+    different preset's ticker of the same name) instead of the specific
+    weights defined in configs/universe.yaml -- e.g. "US Indices" showing
+    25/25/25/25 instead of its actual 30/30/20/20.
+
+    Verified by loading "US Indices" (weights [0.30, 0.30, 0.20, 0.20], not
+    uniform) via Streamlit's AppTest harness and reading back the real
+    number_input widget values, since the bug is specifically about what
+    session state a keyed widget displays across a rerun.
+    """
+
+    def test_selecting_a_preset_loads_its_configured_weights(self, app_test):
+        at = app_test
+        preset_sb = at.sidebar.selectbox[0]
+        assert "US Indices" in preset_sb.options
+
+        preset_sb.set_value("US Indices").run(timeout=60)
+        assert not at.exception
+
+        expected = {"SPY": 0.30, "QQQ": 0.30, "IWM": 0.20, "DIA": 0.20}
+        for ticker, weight in expected.items():
+            assert _weight_value(at, ticker) == pytest.approx(weight), (
+                f"{ticker} shows {_weight_value(at, ticker)} after loading "
+                f"the US Indices preset; expected its configured weight {weight}"
+            )
+
+    def test_switching_between_two_presets_does_not_leak_stale_weights(self, app_test):
+        """AAPL appears in both 'Diversified' (weight 0.20) and 'Magnificent 7'
+        (weight 0.15). Switching presets must load the new preset's own
+        weight for a shared ticker rather than keeping the previous one."""
+        at = app_test
+        preset_sb = at.sidebar.selectbox[0]
+
+        preset_sb.set_value("Diversified").run(timeout=60)
+        assert not at.exception
+        assert _weight_value(at, "AAPL") == pytest.approx(0.20)
+
+        preset_sb = at.sidebar.selectbox[0]
+        preset_sb.set_value("Magnificent 7").run(timeout=60)
+        assert not at.exception
+        assert _weight_value(at, "AAPL") == pytest.approx(0.15)

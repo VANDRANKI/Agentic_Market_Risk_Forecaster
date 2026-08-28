@@ -508,6 +508,40 @@ def _fmt_opt_num(value, digits: int = 3) -> str:
     return f"{value:.{digits}f}"
 
 
+_BACKTEST_UNAVAILABLE = "N/A (insufficient data)"
+
+
+def _fmt_backtest_num(value, digits: int = 3, suffix: str = "") -> str:
+    """Format a backtest statistic for the prompt, or say it could not be computed.
+
+    kupiec_95_pi*/christoffersen_95_pi* and the ES/VaR ratios are None
+    specifically when there were zero observations to evaluate (see
+    risk/backtest.py and risk_display.py's _pval_label, which already
+    handles this for the UI). A bare f-string prints the literal word
+    "None" into the LLM prompt instead, which the model has no way to
+    distinguish from a real value.
+    """
+    if value is None:
+        return _BACKTEST_UNAVAILABLE
+    return f"{value:.{digits}f}{suffix}"
+
+
+def _fmt_backtest_verdict(reject_h0, fail_msg: str, pass_msg: str) -> str:
+    """Describe a Kupiec/Christoffersen outcome, including "test did not run".
+
+    reject_h0 is None (not True/False) precisely when there were zero
+    observations to test (see kupiec_test / christoffersen_test in
+    risk/backtest.py). Treating None as falsy -- `pass_msg if reject_h0 else
+    fail_msg` inverted, or the equivalent truthy check used here before --
+    told the LLM a backtest that never ran had cleanly passed, which is the
+    same false-reassurance failure _fmt_pct and _fmt_opt_pct already guard
+    against for GARCH and the optimizer.
+    """
+    if reject_h0 is None:
+        return f"{_BACKTEST_UNAVAILABLE} to run the test"
+    return fail_msg if reject_h0 else pass_msg
+
+
 def _fmt_risk(ctx: dict) -> str:
     """
     Format risk metrics for the Risk Forecaster agent.
@@ -522,7 +556,7 @@ def _fmt_risk(ctx: dict) -> str:
         f"  -- Spread across 4 methods: {ctx['var_95_method_spread_pct']:.3f}% "
         f"(wide spread = high model uncertainty)",
         f"  -- GARCH vs Historical delta: "
-        f"{ctx.get('garch_vs_hist_var_95_delta_pct', 'N/A')}% "
+        f"{_fmt_backtest_num(ctx.get('garch_vs_hist_var_95_delta_pct'), suffix='%')} "
         f"(positive = GARCH says forward risk is HIGHER than historical average)",
         "",
         "=== 1-Day Expected Shortfall at 95% (mean loss GIVEN breach of VaR) ===",
@@ -532,8 +566,8 @@ def _fmt_risk(ctx: dict) -> str:
         f"  GARCH: {_fmt_pct(ctx['garch_es_95_pct'])}",
         "",
         "=== ES/VaR Ratios (fat-tail indicator) ===",
-        f"  Historical ES/VaR: {ctx.get('es_var_ratio_historical', 'N/A')}",
-        f"  Parametric ES/VaR: {ctx.get('es_var_ratio_parametric', 'N/A')}",
+        f"  Historical ES/VaR: {_fmt_backtest_num(ctx.get('es_var_ratio_historical'))}",
+        f"  Parametric ES/VaR: {_fmt_backtest_num(ctx.get('es_var_ratio_parametric'))}",
         "  Interpretation: ratio > 1.25 = moderate fat tails, "
         "> 1.5 = severe fat tails, > 2.0 = extreme tail risk",
         "(For a perfect normal distribution this ratio is always ~1.25 at 95%.)",
@@ -559,14 +593,14 @@ def _fmt_risk(ctx: dict) -> str:
         f"{round(ctx['expected_exceedances_95'] / 0.05) if ctx['expected_exceedances_95'] else 'N/A'}",
         f"  Actual exceedances: {ctx['n_exceedances_95']}",
         f"  Expected exceedances: {ctx['expected_exceedances_95']}",
-        f"  Kupiec POF Test p-value: {ctx.get('kupiec_95_pval', 'N/A')} "
-        f"-- {'REJECT H0 (model mis-calibrated)' if ctx.get('kupiec_95_reject') else 'PASS (calibration acceptable)'}",
+        f"  Kupiec POF Test p-value: {_fmt_backtest_num(ctx.get('kupiec_95_pval'), 4)} "
+        f"-- {_fmt_backtest_verdict(ctx.get('kupiec_95_reject'), 'REJECT H0 (model mis-calibrated)', 'PASS (calibration acceptable)')}",
         f"  Kupiec verdict: {ctx.get('kupiec_95_interpretation', '')}",
         "",
-        f"  Christoffersen Independence Test p-value: {ctx.get('christoffersen_95_pval', 'N/A')} "
-        f"-- {'REJECT H0 (breaches are clustered)' if ctx.get('christoffersen_95_reject') else 'PASS (breaches are independent)'}",
-        f"  Conditional breach rate given prior breach (pi11): {ctx.get('christoffersen_95_pi11', 'N/A')}",
-        f"  Baseline breach rate (pi01): {ctx.get('christoffersen_95_pi01', 'N/A')}",
+        f"  Christoffersen Independence Test p-value: {_fmt_backtest_num(ctx.get('christoffersen_95_pval'), 4)} "
+        f"-- {_fmt_backtest_verdict(ctx.get('christoffersen_95_reject'), 'REJECT H0 (breaches are clustered)', 'PASS (breaches are independent)')}",
+        f"  Conditional breach rate given prior breach (pi11): {_fmt_backtest_num(ctx.get('christoffersen_95_pi11'), 4)}",
+        f"  Baseline breach rate (pi01): {_fmt_backtest_num(ctx.get('christoffersen_95_pi01'), 4)}",
         f"  Christoffersen verdict: {ctx.get('christoffersen_95_interpretation', '')}",
     ]
     return "\n".join(lines)

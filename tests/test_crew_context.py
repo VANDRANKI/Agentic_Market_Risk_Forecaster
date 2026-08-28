@@ -19,8 +19,12 @@ from agents.crew import (  # noqa: E402
     _fmt_opt_pct,
     _fmt_opt_num,
     _fmt_portfolio,
+    _fmt_risk,
+    _fmt_backtest_num,
+    _fmt_backtest_verdict,
     _MODEL_UNAVAILABLE,
     _OPTIMIZATION_UNAVAILABLE,
+    _BACKTEST_UNAVAILABLE,
     compile_analysis_context,
 )
 
@@ -183,3 +187,92 @@ class TestFailedOptimizationIsNotReportedAsZeroReturnPortfolio:
         assert _OPTIMIZATION_UNAVAILABLE not in out
         assert "18.0%" in out
         assert "0.650" in out
+
+
+class TestFmtBacktestHelpers:
+    def test_none_is_named_not_zeroed(self):
+        assert _fmt_backtest_num(None) == _BACKTEST_UNAVAILABLE
+
+    def test_value_is_formatted(self):
+        assert _fmt_backtest_num(0.812, 4) == "0.8120"
+        assert _fmt_backtest_num(1.25, suffix="%") == "1.250%"
+
+    def test_genuine_zero_is_not_mistaken_for_missing(self):
+        assert _fmt_backtest_num(0.0, 4) == "0.0000"
+
+    def test_verdict_none_is_named_not_a_pass(self):
+        """reject_h0=None means the test had zero observations to evaluate
+        (see kupiec_test/christoffersen_test in risk/backtest.py), not that
+        it ran and cleared the bar."""
+        verdict = _fmt_backtest_verdict(None, "REJECT H0", "PASS")
+        assert verdict != "PASS"
+        assert _BACKTEST_UNAVAILABLE in verdict
+
+    def test_verdict_true_and_false_still_map_correctly(self):
+        assert _fmt_backtest_verdict(True, "REJECT H0", "PASS") == "REJECT H0"
+        assert _fmt_backtest_verdict(False, "REJECT H0", "PASS") == "PASS"
+
+
+class TestBacktestWithZeroObservationsIsNotReportedAsAPass:
+    """Regression: kupiec_test and christoffersen_test return p_value=None,
+    reject_h0=None when there were zero observations to evaluate (e.g. a
+    short lookback leaves the rolling VaR backtest window empty). _fmt_risk
+    used to read that with ctx.get(key, 'N/A'), which never applies because
+    the key IS present with value None, printing the literal word "None".
+    Worse, `'REJECT...' if ctx.get('kupiec_95_reject') else 'PASS...'`
+    treated the None reject flag as falsy and told the LLM the model's
+    calibration was a clean PASS, when the test never ran at all."""
+
+    _INSUFFICIENT = {"p_value": None, "reject_h0": None,
+                      "interpretation": "Insufficient data."}
+
+    def test_prompt_does_not_leak_the_word_none(self):
+        ctx = _context()
+        ctx["kupiec_95_pval"] = None
+        ctx["kupiec_95_reject"] = None
+        ctx["christoffersen_95_pval"] = None
+        ctx["christoffersen_95_reject"] = None
+        ctx["christoffersen_95_pi01"] = None
+        ctx["christoffersen_95_pi11"] = None
+        out = _fmt_risk(ctx)
+        assert "None" not in out
+
+    def test_prompt_does_not_falsely_claim_a_pass(self):
+        ctx = _context()
+        ctx["kupiec_95_pval"] = None
+        ctx["kupiec_95_reject"] = None
+        ctx["christoffersen_95_pval"] = None
+        ctx["christoffersen_95_reject"] = None
+        out = _fmt_risk(ctx)
+        assert "PASS (calibration acceptable)" not in out
+        assert "PASS (breaches are independent)" not in out
+        assert _BACKTEST_UNAVAILABLE in out
+
+    def test_compile_analysis_context_propagates_none_from_backtest_results(self):
+        """End-to-end: a kupiec_95/christoffersen_95 dict with zero
+        observations (as risk/backtest.py returns) must reach _fmt_risk
+        with None fields, and _fmt_risk must not render that as a pass."""
+        ctx = _context()
+        prices, returns, port = _frame()
+        ctx = compile_analysis_context(
+            tickers=["AAA", "BBB"],
+            weights={"AAA": 0.5, "BBB": 0.5},
+            prices=prices,
+            returns=returns,
+            portfolio_returns=port,
+            risk_metrics=dict(BASE_METRICS),
+            backtest_results={
+                "kupiec_95": dict(self._INSUFFICIENT),
+                "christoffersen_95": dict(self._INSUFFICIENT),
+                "n_exceedances_95": 0,
+                "expected_exceedances_95": 0,
+            },
+            portfolio_results={},
+            anomalies={},
+        )
+        assert ctx["kupiec_95_reject"] is None
+        assert ctx["christoffersen_95_reject"] is None
+        out = _fmt_risk(ctx)
+        assert "None" not in out
+        assert "PASS (calibration acceptable)" not in out
+        assert "PASS (breaches are independent)" not in out

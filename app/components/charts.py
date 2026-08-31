@@ -363,8 +363,19 @@ def chart_correlation_heatmap(
     )
 
     layout = _base_layout(title, height=380)
+    # Heatmap cells already show their own boundaries, so the shared
+    # gridlines from _base_layout are redundant clutter here; disable them
+    # per-axis instead of dropping the axis config outright. The previous
+    # code set layout["xaxis"]["side"] = "bottom" and then unconditionally
+    # popped "xaxis" (and "yaxis") from the same dict two lines later,
+    # discarding that assignment -- and every other axis setting -- before
+    # fig.update_layout() ever saw it. Confirmed via fig.to_dict(): the
+    # resulting figure had no xaxis/yaxis layout at all, so this chart fell
+    # back to Plotly's own heatmap axis defaults instead of the "side":
+    # "bottom" tick placement the code was clearly trying to set, and lost
+    # the dark-theme styling every other chart in this file gets.
+    layout["xaxis"]["showgrid"] = False
     layout["xaxis"]["side"] = "bottom"
-    layout.pop("xaxis", None)
-    layout.pop("yaxis", None)
+    layout["yaxis"]["showgrid"] = False
     fig.update_layout(**layout)
     return fig

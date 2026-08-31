@@ -14,7 +14,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from app.components.charts import chart_var_exceedance, chart_var_comparison, garch_value_to_pct  # noqa: E402
+from app.components.charts import (  # noqa: E402
+    chart_var_exceedance,
+    chart_var_comparison,
+    chart_correlation_heatmap,
+    garch_value_to_pct,
+)
 
 
 def _sample(n=60):
@@ -107,3 +112,31 @@ class TestChartVarComparisonOmitsFailedGarch:
         fig = chart_var_comparison(var_df)
         garch_trace = next(t for t in fig.data if t.name == "GARCH")
         assert list(garch_trace.y) == pytest.approx([1.81, 2.56])
+
+
+class TestChartCorrelationHeatmapLayout:
+    """Regression: the layout dict set layout["xaxis"]["side"] = "bottom"
+    and then unconditionally called layout.pop("xaxis", None) and
+    layout.pop("yaxis", None) two lines later, discarding that assignment
+    -- and every other axis setting from _base_layout, including the
+    dark-theme gridcolor -- before fig.update_layout() ever saw it. The
+    resulting figure had no xaxis/yaxis layout at all, falling back to
+    Plotly's own heatmap defaults instead of "side": "bottom"."""
+
+    def _sample_returns(self, n=40):
+        idx = pd.date_range("2024-01-01", periods=n, freq="B")
+        rng = np.random.default_rng(7)
+        return pd.DataFrame(
+            rng.normal(0, 0.01, size=(n, 3)),
+            index=idx,
+            columns=["AAPL", "MSFT", "SPY"],
+        )
+
+    def test_xaxis_side_is_actually_applied(self):
+        fig = chart_correlation_heatmap(self._sample_returns())
+        assert fig.layout.xaxis.side == "bottom"
+
+    def test_axes_keep_the_shared_dark_theme_styling(self):
+        fig = chart_correlation_heatmap(self._sample_returns())
+        assert fig.layout.xaxis.gridcolor == "#1e293b"
+        assert fig.layout.yaxis.gridcolor == "#1e293b"

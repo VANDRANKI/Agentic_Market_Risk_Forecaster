@@ -26,6 +26,8 @@ load_dotenv(_root / ".env")
 
 import streamlit as st
 
+logger = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
 # Page config (must be the very first Streamlit call)
 # ---------------------------------------------------------------------------
@@ -597,7 +599,7 @@ def render_results(results: dict, confidence_level: float) -> None:
         try:
             garch_vol = garch_conditional_vol_series(pr)
         except Exception:
-            pass
+            logger.debug("garch_conditional_vol_series failed, falling back to no GARCH overlay", exc_info=True)
 
         st.plotly_chart(
             chart_rolling_volatility(pr, garch_vol),

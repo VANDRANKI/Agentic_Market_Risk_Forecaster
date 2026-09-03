@@ -1,5 +1,7 @@
 # Agentic Market Risk Forecaster
 
+[![Python application](https://github.com/VANDRANKI/Agentic_Market_Risk_Forecaster/actions/workflows/python-app.yml/badge.svg?branch=main)](https://github.com/VANDRANKI/Agentic_Market_Risk_Forecaster/actions/workflows/python-app.yml)
+
 **Live dashboard:** https://agentic-market-risk-forecaster-prabhu.streamlit.app/
 
 A multi-agent quantitative risk system that computes VaR and Expected Shortfall

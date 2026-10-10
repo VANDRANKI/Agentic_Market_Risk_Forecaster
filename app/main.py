@@ -358,7 +358,7 @@ def render_sidebar() -> dict:
     )
 
     st.sidebar.markdown("---")
-    run_btn = st.sidebar.button("Run Analysis", type="primary", use_container_width=True)
+    run_btn = st.sidebar.button("Run Analysis", type="primary", width="stretch")
 
     return {
         "tickers": tickers,
@@ -494,13 +494,13 @@ def render_results(results: dict, confidence_level: float) -> None:
         with col_r:
             st.plotly_chart(
                 chart_returns_over_time(pr, z_flags),
-                use_container_width=True,
+                width="stretch",
                 config={"displayModeBar": False},
             )
         with col_cum:
             st.plotly_chart(
                 chart_cumulative_returns(pr),
-                use_container_width=True,
+                width="stretch",
                 config={"displayModeBar": False},
             )
 
@@ -509,7 +509,7 @@ def render_results(results: dict, confidence_level: float) -> None:
         if dd_series is not None:
             st.plotly_chart(
                 chart_drawdown(dd_series),
-                use_container_width=True,
+                width="stretch",
                 config={"displayModeBar": False},
             )
 
@@ -521,7 +521,7 @@ def render_results(results: dict, confidence_level: float) -> None:
             st.markdown("#### Asset Return Correlations")
             st.plotly_chart(
                 chart_correlation_heatmap(ret),
-                use_container_width=True,
+                width="stretch",
                 config={"displayModeBar": False},
             )
 
@@ -536,7 +536,7 @@ def render_results(results: dict, confidence_level: float) -> None:
             st.markdown("#### VaR Exceedance Chart")
             st.plotly_chart(
                 chart_var_exceedance(pr, rolling_var),
-                use_container_width=True,
+                width="stretch",
                 config={"displayModeBar": False},
             )
 
@@ -557,7 +557,7 @@ def render_results(results: dict, confidence_level: float) -> None:
         var_df = pd.DataFrame(var_data, index=["95% VaR", "99% VaR"])
         st.plotly_chart(
             chart_var_comparison(var_df),
-            use_container_width=True,
+            width="stretch",
             config={"displayModeBar": False},
         )
 
@@ -584,7 +584,7 @@ def render_results(results: dict, confidence_level: float) -> None:
         if all_p_display:
             st.plotly_chart(
                 chart_portfolio_weights_comparison(all_p_display),
-                use_container_width=True,
+                width="stretch",
                 config={"displayModeBar": False},
             )
 
@@ -603,7 +603,7 @@ def render_results(results: dict, confidence_level: float) -> None:
 
         st.plotly_chart(
             chart_rolling_volatility(pr, garch_vol),
-            use_container_width=True,
+            width="stretch",
             config={"displayModeBar": False},
         )
 

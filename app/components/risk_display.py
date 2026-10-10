@@ -145,7 +145,7 @@ def render_var_table(risk_metrics: dict) -> None:
         })
 
     df = pd.DataFrame(rows).set_index("Method")
-    st.dataframe(df, use_container_width=True)
+    st.dataframe(df, width="stretch")
 
     # 10-day VaR callout
     var_10d = risk_metrics.get("var_10d_95", 0)

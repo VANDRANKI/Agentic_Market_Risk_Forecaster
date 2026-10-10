@@ -36,43 +36,31 @@ sys.path.insert(0, str(_ROOT))
 streamlit_testing = pytest.importorskip("streamlit.testing.v1")
 AppTest = streamlit_testing.AppTest
 
-_SECRETS_PATH = _ROOT / ".streamlit" / "secrets.toml"
-
-
 @pytest.fixture
 def app_test():
     """Run app/main.py's real script through Streamlit's AppTest harness.
 
-    app/main.py reads st.secrets at import time (to forward Streamlit Cloud
-    secrets into os.environ); with no secrets.toml present, `key in
-    st.secrets` raises StreamlitSecretNotFoundError before the sidebar is
-    ever rendered. A dev machine may or may not already have a real
-    secrets.toml (which can hold live API keys and must never be touched or
-    committed), so this fixture only creates an empty placeholder when one
-    is not already present, and only removes what it created.
+    app/main.py forwards Streamlit Cloud secrets into os.environ at import
+    time. It must tolerate a missing secrets.toml (the normal local setup,
+    where keys come from .env), so no placeholder file is created here.
     """
-    created = False
-    if not _SECRETS_PATH.exists():
-        _SECRETS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _SECRETS_PATH.write_text("", encoding="utf-8")
-        created = True
+    at = AppTest.from_file(str(_ROOT / "app" / "main.py"))
+    at.run(timeout=60)
+    assert not at.exception, f"Initial run raised: {at.exception}"
+    return at
 
-    try:
-        at = AppTest.from_file(str(_ROOT / "app" / "main.py"))
-        at.run(timeout=60)
-        assert not at.exception, f"Initial run raised: {at.exception}"
-        yield at
-    finally:
-        if created:
-            try:
-                _SECRETS_PATH.unlink(missing_ok=True)
-            except PermissionError:
-                # On Windows, Streamlit's file-watcher can still hold the
-                # secrets.toml handle open for a moment after the script run
-                # finishes. The placeholder is empty and gitignored, so
-                # leaving it behind is harmless; it will be cleaned up next
-                # run once the watcher releases the handle.
-                pass
+
+class TestStartsWithoutSecretsFile:
+    """Regression: app/main.py read `key in st.secrets` unguarded, so with no
+    secrets.toml the whole app died with StreamlitSecretNotFoundError before
+    rendering anything, even though the README says to configure keys in .env."""
+
+    @pytest.mark.skipif(
+        (_ROOT / ".streamlit" / "secrets.toml").exists(),
+        reason="a real secrets.toml exists on this machine",
+    )
+    def test_initial_run_succeeds_with_no_secrets_toml(self, app_test):
+        assert not app_test.exception
 
 
 def _weight_value(at, ticker: str) -> float:

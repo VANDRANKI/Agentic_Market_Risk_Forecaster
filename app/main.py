@@ -39,10 +39,15 @@ st.set_page_config(
 )
 
 # Inject Streamlit Cloud secrets into os.environ so downstream code
-# (CrewAI / LiteLLM) can read them via os.getenv().
-for _key in ("GROQ_API_KEY", "ALPHA_VANTAGE_API_KEY"):
-    if _key in st.secrets and not os.environ.get(_key):
-        os.environ[_key] = st.secrets[_key]
+# (CrewAI / LiteLLM) can read them via os.getenv(). Locally there is usually no
+# secrets.toml (keys come from .env instead), and Streamlit raises
+# StreamlitSecretNotFoundError, a FileNotFoundError subclass, on any lookup.
+try:
+    for _key in ("GROQ_API_KEY", "ALPHA_VANTAGE_API_KEY"):
+        if _key in st.secrets and not os.environ.get(_key):
+            os.environ[_key] = st.secrets[_key]
+except FileNotFoundError:
+    pass
 
 # ---------------------------------------------------------------------------
 # CSS injection

@@ -28,6 +28,10 @@ logger = logging.getLogger(__name__)
 # was written for an earlier window and should be refetched.
 _CACHE_END_TOLERANCE_DAYS = 5
 
+# Likewise the first cached row is the first trading day on or after the
+# requested start, so it trails a start that falls on a weekend or holiday.
+_CACHE_START_TOLERANCE_DAYS = 5
+
 
 class DataProvider:
     """
@@ -310,7 +314,13 @@ class DataProvider:
             # Checking the start alone means a cache written for an earlier end
             # date is still accepted, and the caller silently receives a
             # truncated series instead of a refetch.
-            if series.index.min() > start_dt:
+            #
+            # The first row is the first trading day on or after the requested
+            # start, so allow the same slack as at the end. Without it a start
+            # that lands on a weekend or holiday (analysis.py derives it as
+            # "today minus N days", so roughly 2 days in 7) never matched its
+            # own cache and every Streamlit rerun hit the network again.
+            if series.index.min() > start_dt + pd.Timedelta(days=_CACHE_START_TOLERANCE_DAYS):
                 return None
 
             # The last cached row is the last trading day, so it legitimately

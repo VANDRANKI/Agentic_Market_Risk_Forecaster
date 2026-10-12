@@ -121,9 +121,11 @@ def garch_var_forecast(
     """
     Forecast next-day (or N-day) VaR and ES using a fitted GARCH(p,q) model.
 
-    The conditional variance for the next period comes directly from the
-    GARCH model's one-step-ahead forecast. This is more accurate than the
-    square-root-of-time scaling for short horizons.
+    The conditional variances come directly from the GARCH model's multi-step
+    forecast. For horizon > 1 the horizon return is the sum of the daily
+    returns, so its variance is the sum of the daily conditional variances
+    (the variance forecast mean-reverts, so this is not simply N times the
+    one-day variance). This is more accurate than square-root-of-time scaling.
 
     Parameters
     ----------
@@ -134,7 +136,7 @@ def garch_var_forecast(
 
     Returns
     -------
-    dict with keys: var, es, conditional_sigma, persistence, horizon
+    dict with keys: var, es, conditional_sigma (daily, at the last step), persistence, horizon
     Returns None if fitting fails.
     """
     fit = fit_garch(returns, p=p, q=q)
@@ -146,15 +148,23 @@ def garch_var_forecast(
     try:
         forecasts = result.forecast(horizon=horizon, reindex=False)
         # conditional variance is in (scaled returns)^2 units
-        cond_var_scaled = float(forecasts.variance.values[-1, horizon - 1])
+        step_variances = forecasts.variance.values[-1, :horizon]
+        cond_var_scaled = float(step_variances[-1])
         cond_sigma = np.sqrt(cond_var_scaled) / 100.0  # back to decimal returns
 
+        # The loss over the whole horizon is the sum of `horizon` daily returns.
+        # With a constant mean and uncorrelated innovations its variance is the
+        # sum of the daily conditional variances and its mean is horizon * mu.
+        # Using only the last day's variance understated the N-day VaR/ES by
+        # roughly sqrt(N) (a 10-day VaR came out the same as the 1-day one).
+        horizon_sigma = np.sqrt(float(step_variances.sum())) / 100.0
+
         mu_scaled = float(result.params.get("mu", 0.0))
-        mu = mu_scaled / 100.0
+        mu = mu_scaled / 100.0 * horizon
 
         z = stats.norm.ppf(alpha)
-        var = float(-(mu + z * cond_sigma))
-        es = float(-(mu - cond_sigma * stats.norm.pdf(z) / alpha))
+        var = float(-(mu + z * horizon_sigma))
+        es = float(-(mu - horizon_sigma * stats.norm.pdf(z) / alpha))
 
         return {
             "var": round(max(var, 0.0), 6),

@@ -504,7 +504,7 @@ def render_results(results: dict, confidence_level: float) -> None:
             )
         with col_cum:
             st.plotly_chart(
-                chart_cumulative_returns(pr),
+                chart_cumulative_returns(pr, log_returns=True),
                 width="stretch",
                 config={"displayModeBar": False},
             )

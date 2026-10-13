@@ -15,6 +15,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from app.components.charts import (  # noqa: E402
+    chart_cumulative_returns,
     chart_var_exceedance,
     chart_var_comparison,
     chart_correlation_heatmap,
@@ -140,3 +141,25 @@ class TestChartCorrelationHeatmapLayout:
         fig = chart_correlation_heatmap(self._sample_returns())
         assert fig.layout.xaxis.gridcolor == "#1e293b"
         assert fig.layout.yaxis.gridcolor == "#1e293b"
+
+
+class TestChartCumulativeReturns:
+    def test_log_returns_add_up_to_the_price_move(self):
+        """Regression: the analysis pipeline holds log returns, which were
+        compounded as (1 + r) and so understated the cumulative return."""
+        idx = pd.date_range("2024-01-01", periods=4, freq="B")
+        prices = pd.Series([100.0, 110.0, 99.0, 121.0], index=idx)
+        log_r = np.log(prices / prices.shift(1)).dropna()
+
+        fig = chart_cumulative_returns(log_r, log_returns=True)
+
+        y = np.asarray(fig.data[0].y)
+        np.testing.assert_allclose(y, (prices.iloc[1:] / prices.iloc[0] - 1).values * 100)
+
+    def test_simple_returns_compound_by_default(self):
+        idx = pd.date_range("2024-01-01", periods=3, freq="B")
+        simple_r = pd.Series([0.10, -0.10, 0.20], index=idx)
+
+        fig = chart_cumulative_returns(simple_r)
+
+        np.testing.assert_allclose(np.asarray(fig.data[0].y), [10.0, -1.0, 18.8])

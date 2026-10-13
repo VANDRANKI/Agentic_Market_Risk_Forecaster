@@ -309,33 +309,44 @@ def scale_var_to_horizon(var_1d: float, horizon: int = 10) -> float:
 # ---------------------------------------------------------------------------
 
 
-def compute_drawdown(returns: pd.Series) -> pd.Series:
+def compute_drawdown(returns: pd.Series, log_returns: bool = False) -> pd.Series:
     """
     Compute the drawdown series from a return series.
 
     Drawdown at time t is (cumulative wealth at t - running peak) / running peak.
     Values are <= 0.
 
+    Parameters
+    ----------
+    returns     : daily returns
+    log_returns : True if ``returns`` are log returns (as produced by
+                  ``compute_returns(method="log")``). Wealth is then
+                  exp(cumsum(returns)). Compounding log returns as if they
+                  were simple returns understates wealth and overstates the
+                  drawdown (about 2.3 points on a 40 percent drawdown at 2
+                  percent daily volatility).
+
     Returns
     -------
     pd.Series of drawdown values (same index as returns)
     """
-    cum = (1 + returns).cumprod()
+    cum = np.exp(returns.cumsum()) if log_returns else (1 + returns).cumprod()
     peak = cum.cummax()
     return (cum - peak) / peak
 
 
-def max_drawdown(returns: pd.Series) -> float:
+def max_drawdown(returns: pd.Series, log_returns: bool = False) -> float:
     """
     Return the maximum (deepest) drawdown over the full period.
 
     A return of -0.30 means the portfolio fell 30% from its peak at some point.
+    Set ``log_returns`` when the input is log returns (see compute_drawdown).
 
     Returns
     -------
     float <= 0
     """
-    return float(compute_drawdown(returns).min())
+    return float(compute_drawdown(returns, log_returns=log_returns).min())
 
 
 # ---------------------------------------------------------------------------

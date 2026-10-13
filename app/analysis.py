@@ -185,8 +185,10 @@ def run_full_analysis(
     risk_metrics["var_10d_95"] = scale_var_to_horizon(risk_metrics["hist_var_95"], 10)
 
     # Drawdown
-    risk_metrics["drawdown_series"] = compute_drawdown(pr)
-    risk_metrics["max_drawdown"] = max_drawdown(pr)
+    # pr holds log returns (compute_returns(method="log") above), so compound
+    # them as log returns rather than as simple returns.
+    risk_metrics["drawdown_series"] = compute_drawdown(pr, log_returns=True)
+    risk_metrics["max_drawdown"] = max_drawdown(pr, log_returns=True)
 
     # Regime
     try:

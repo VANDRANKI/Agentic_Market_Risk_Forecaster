@@ -302,6 +302,27 @@ class TestDrawdown:
         dd = compute_drawdown(all_positive)
         assert dd.max() == pytest.approx(0.0, abs=1e-10)
 
+    def test_log_returns_reproduce_the_price_drawdown(self):
+        """Regression: log returns were compounded as (1 + r), which overstated
+        the drawdown. With log_returns=True the result must equal the drawdown
+        measured directly on the prices."""
+        rng = np.random.default_rng(1)
+        prices = pd.Series(100 * np.exp(np.cumsum(rng.normal(0, 0.02, 252))))
+        log_r = compute_returns(prices, method="log")
+
+        expected = prices.iloc[1:] / prices.iloc[1:].cummax() - 1
+        got = compute_drawdown(log_r, log_returns=True)
+
+        np.testing.assert_allclose(got.values, expected.values, atol=1e-12)
+        assert max_drawdown(log_r, log_returns=True) == pytest.approx(expected.min())
+        # The simple-return path is a different (and here deeper) number.
+        assert max_drawdown(log_r) < max_drawdown(log_r, log_returns=True)
+
+    def test_simple_returns_default_is_unchanged(self):
+        prices = pd.Series([100.0, 120.0, 90.0, 95.0])
+        simple_r = compute_returns(prices, method="simple")
+        assert max_drawdown(simple_r) == pytest.approx(90.0 / 120.0 - 1)
+
 
 # ---------------------------------------------------------------------------
 # Rolling volatility

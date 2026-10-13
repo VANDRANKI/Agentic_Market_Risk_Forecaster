@@ -87,10 +87,16 @@ def chart_returns_over_time(
 def chart_cumulative_returns(
     portfolio_returns: pd.Series,
     title: str = "Cumulative Portfolio Returns",
+    log_returns: bool = False,
 ) -> go.Figure:
-    """Area chart of cumulative portfolio returns."""
+    """Area chart of cumulative portfolio returns.
+
+    Set ``log_returns`` when the series holds log returns, as the analysis
+    pipeline produces. They add up over time rather than compound, so treating
+    them as simple returns understates the cumulative return.
+    """
     r = portfolio_returns.dropna()
-    cum = (1 + r).cumprod() - 1
+    cum = np.expm1(r.cumsum()) if log_returns else (1 + r).cumprod() - 1
 
     fig = go.Figure()
     fig.add_trace(

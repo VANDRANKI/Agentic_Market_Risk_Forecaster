@@ -130,3 +130,20 @@ class TestPipelineOutputs:
         b = run_full_analysis(confidence_level=0.99, **kwargs)["risk_metrics"]
         assert a["hist_var_95"] == b["hist_var_95"]
         assert a["hist_var_99"] == b["hist_var_99"]
+
+
+class TestDrawdownUsesLogReturns:
+    def test_max_drawdown_matches_the_price_path(self, stub_provider):
+        """Regression: portfolio returns are log returns, but the drawdown
+        compounded them as simple returns and reported a deeper drawdown than
+        the price series actually had."""
+        out = run_full_analysis(
+            tickers=["AAPL"],
+            weights={"AAPL": 1.0},
+            lookback_days=250,
+            run_agents=False,
+            n_mc_sims=200,
+        )
+        prices = out["prices"]["AAPL"].iloc[1:]
+        expected = (prices / prices.cummax() - 1).min()
+        assert out["risk_metrics"]["max_drawdown"] == pytest.approx(expected, abs=1e-9)

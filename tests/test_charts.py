@@ -16,6 +16,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from app.components.charts import (  # noqa: E402
     chart_cumulative_returns,
+    chart_portfolio_weights_comparison,
+    chart_returns_over_time,
+    chart_rolling_volatility,
     chart_var_exceedance,
     chart_var_comparison,
     chart_correlation_heatmap,
@@ -163,3 +166,81 @@ class TestChartCumulativeReturns:
         fig = chart_cumulative_returns(simple_r)
 
         np.testing.assert_allclose(np.asarray(fig.data[0].y), [10.0, -1.0, 18.8])
+
+
+class TestChartReturnsOverTime:
+    def test_bars_are_percent_and_coloured_by_sign(self):
+        idx = pd.date_range("2024-01-01", periods=3, freq="B")
+        r = pd.Series([0.01, -0.02, 0.0], index=idx)
+        fig = chart_returns_over_time(r)
+        bars = fig.data[0]
+        np.testing.assert_allclose(bars.y, [1.0, -2.0, 0.0])
+        # A zero return counts as a gain, a negative one as a loss.
+        assert bars.marker.color[0] == bars.marker.color[2]
+        assert bars.marker.color[1] != bars.marker.color[0]
+
+    def test_nan_returns_are_dropped(self):
+        idx = pd.date_range("2024-01-01", periods=3, freq="B")
+        fig = chart_returns_over_time(pd.Series([0.01, np.nan, 0.02], index=idx))
+        assert len(fig.data[0].x) == 2
+
+    def test_anomaly_markers_sit_on_the_flagged_days(self):
+        returns, _ = _sample(20)
+        flags = pd.Series(False, index=returns.index)
+        flags.iloc[[3, 9]] = True
+        fig = chart_returns_over_time(returns, flags)
+        assert [t.name for t in fig.data] == ["Daily Return", "Anomaly"]
+        assert list(fig.data[1].x) == [returns.index[3], returns.index[9]]
+        np.testing.assert_allclose(fig.data[1].y, returns.iloc[[3, 9]].values * 100)
+
+    def test_flags_covering_only_part_of_the_range(self):
+        """Days the flag series does not cover count as not anomalous."""
+        returns, _ = _sample(20)
+        flags = pd.Series(True, index=returns.index[:2])
+        fig = chart_returns_over_time(returns, flags)
+        assert len(fig.data[1].x) == 2
+
+    def test_no_flagged_days_adds_no_anomaly_trace(self):
+        returns, _ = _sample(20)
+        flags = pd.Series(False, index=returns.index)
+        fig = chart_returns_over_time(returns, flags)
+        assert [t.name for t in fig.data] == ["Daily Return"]
+
+
+class TestChartRollingVolatility:
+    def test_realised_vol_trace_and_optional_garch_trace(self):
+        returns, _ = _sample(60)
+        fig = chart_rolling_volatility(returns, window=10)
+        assert len(fig.data) == 1
+        assert fig.data[0].name == "Rolling 10d Vol (annualized)"
+
+        garch = pd.Series(0.01, index=returns.index)
+        fig = chart_rolling_volatility(returns, garch_vol=garch, window=10)
+        assert [t.name for t in fig.data][1] == "GARCH Conditional Vol"
+        np.testing.assert_allclose(fig.data[1].y, 1.0)
+
+    def test_empty_garch_series_is_ignored(self):
+        returns, _ = _sample(60)
+        fig = chart_rolling_volatility(returns, garch_vol=pd.Series(dtype=float), window=10)
+        assert len(fig.data) == 1
+
+
+class TestChartPortfolioWeightsComparison:
+    def test_one_trace_per_ticker_with_percent_values(self):
+        fig = chart_portfolio_weights_comparison(
+            {"Current": {"A": 0.5, "B": 0.5}, "MaxSharpe": {"A": 1.0}}
+        )
+        traces = {t.name: list(t.y) for t in fig.data}
+        assert traces == {"A": [50.0, 100.0], "B": [50.0, 0]}
+        assert list(fig.data[0].x) == ["Current", "MaxSharpe"]
+
+    def test_stacked_on_a_zero_to_hundred_axis(self):
+        fig = chart_portfolio_weights_comparison({"Current": {"A": 1.0}})
+        assert fig.layout.barmode == "stack"
+        assert tuple(fig.layout.yaxis.range) == (0, 100)
+
+    def test_more_tickers_than_colours_reuses_the_palette(self):
+        weights = {f"T{i}": 1 / 9 for i in range(9)}
+        fig = chart_portfolio_weights_comparison({"Current": weights})
+        assert len(fig.data) == 9
+        assert fig.data[0].marker.color == fig.data[7].marker.color
